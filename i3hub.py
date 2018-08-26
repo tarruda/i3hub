@@ -241,9 +241,13 @@ class I3Hub(object):
         i3_events = (k for k in self._event_handlers.keys() if k in I3_EVENTS)
         await self._conn.subscribe(*list(i3_events))
 
-    async def _dispatch_event(self, event, payload):
-        for handler in self._event_handlers.get(event, []):
-             self._loop.create_task(handler(self._i3api, payload))
+    async def _dispatch_event(self, event, payload, serially=False):
+        if serially:
+            for handler in self._event_handlers.get(event, []):
+                await handler(self._i3api, payload)
+        else:
+            for handler in self._event_handlers.get(event, []):
+                 self._loop.create_task(handler(self._i3api, payload))
 
     async def _dispatch_stop(self):
         if self._statusproc:
@@ -255,15 +259,15 @@ class I3Hub(object):
             self._statusproc.send_signal(self._status_cont_sig)
         return await self._dispatch_event('status_cont', None) 
 
-    async def _dispatch_update(self, line, first=False):
+    async def _dispatch_update(self, line, first):
         # unlike most events, status updates are processed serially to allow
         # deterministic ordered processing by plugins
         self._current_status_data = json.loads(line)
-        for handler in self._event_handlers.get('status_update', []):
-            await handler(self._i3api, self._current_status_data)
-        self._output_updated_status(first=first)
+        await self._dispatch_event('status_update', self._current_status_data,
+                serially=True)
+        self._output_updated_status(first)
 
-    def _output_updated_status(self, first=False):
+    def _output_updated_status(self, first):
         if not first:
             sys.stdout.write(',')
         sys.stdout.write(json.dumps(self._current_status_data))
@@ -284,8 +288,7 @@ class I3Hub(object):
             return False
         if not first:
             line = line[1:]
-        await self._dispatch_update(line.decode('utf-8', 'replace'),
-                first=first)
+        await self._dispatch_update(line.decode('utf-8', 'replace'), first)
         return True
 
     async def _run_status(self):
@@ -299,7 +302,7 @@ class I3Hub(object):
         }))
         sys.stdout.write('\n[\n')
         if not self._status_command:
-            await self._dispatch_update('[]\n', first=True)
+            await self._dispatch_update('[]\n', True)
             return
         self._statusproc = await asyncio.create_subprocess_exec(
                 *self._status_command, stdout=asyncio.subprocess.PIPE)
@@ -329,8 +332,9 @@ class I3Hub(object):
         self._setup_signals()
         self._i3api = I3ApiWrapper(self._conn,
                 get_status_cb=lambda: self._current_status_data,
-                update_status_cb=lambda: self._output_updated_status())
+                update_status_cb=lambda: self._output_updated_status(False))
         await self._setup_events()
+        await self._dispatch_event('init', None)
         tasks = [self._dispatch_events()]
         if self._run_as_status:
             tasks.append(self._run_status())
