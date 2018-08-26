@@ -8,12 +8,17 @@ import importlib
 import os
 import pkgutil
 import signal
+import shlex
 import struct
 import subprocess
 import sys
 
 
 from xdg.BaseDirectory import xdg_config_dirs as XDG_CONFIG_DIRS
+
+
+STOP_SIGNAL = signal.SIGRTMAX
+CONT_SIGNAL = signal.SIGRTMAX - 1
 
 
 MESSAGES = (
@@ -31,7 +36,7 @@ MESSAGES = (
 )
 
 
-EVENTS = (
+I3_EVENTS = (
     'workspace',
     'output',
     'mode',
@@ -39,6 +44,13 @@ EVENTS = (
     'barconfig_update',
     'binding',
     'shutdown',
+)
+
+HUB_EVENTS = (
+    'init',
+    'status_update',
+    'status_stop',
+    'status_cont',
 )
 
 
@@ -78,6 +90,8 @@ class I3ApiWrapperMeta(type):
     def __new__(cls, clsname, superclasses, attrs):
         def gen_method(async_method):
             def wrapper(self, *args, **kwargs):
+                if self._shutting_down:
+                    raise Exception('Cannot send messages when shutting down')
                 return async_method(self._conn, *args, **kwargs)
             return wrapper
 
@@ -147,7 +161,7 @@ class I3AsyncioConnection(object, metaclass=I3AsyncConnectionMeta):
         if msg_type == 'eof':
             self._event_queue.append(('eof', None))
         elif is_event:
-            self._event_queue.append((EVENTS[msg_type], payload))
+            self._event_queue.append((I3_EVENTS[msg_type], payload))
         elif payload:
             assert self._reply
             self._reply.set_result(payload)
@@ -171,14 +185,30 @@ class I3Connection(object, metaclass=I3ConnectionMeta):
 
 
 class I3ApiWrapper(object, metaclass=I3ApiWrapperMeta):
-    def __init__(self, conn):
+    def __init__(self, conn, get_status_cb, update_status_cb):
         self._conn = conn
+        self._shutting_down = False
+        self._get_status_cb = get_status_cb
+        self._update_status_cb = update_status_cb
+
+    def get_status(self):
+        return self._get_status_cb()
+
+    def update_status(self):
+        return self._update_status_cb()
 
 
 class I3Hub(object):
-    def __init__(self, config_dirs, socket_path=None):
+    def __init__(self, config_dirs, socket_path=None, run_as_status=False,
+            status_command='i3status'):
         self._socket_path = socket_path
+        self._run_as_status = run_as_status
+        self._status_command = status_command
+        self._status_stop_sig = signal.SIGSTOP
+        self._status_cont_sig = signal.SIGCONT
         self._config_dirs = config_dirs.split(':')
+        self._statusproc = None
+        self._current_status_data = None
         self._plugins = None
         self._conn = None
         self._loop = None
@@ -191,37 +221,128 @@ class I3Hub(object):
             self._event_handlers[event] = []
         self._event_handlers[event].append(handler)
 
+    def _setup_signals(self):
+        loop = self._loop
+        sig_handler = lambda: self.stop()
+        loop.add_signal_handler(signal.SIGINT, sig_handler)
+        loop.add_signal_handler(signal.SIGTERM, sig_handler)
+        if self._run_as_status:
+            loop.add_signal_handler(STOP_SIGNAL,
+                    lambda: loop.create_task(self._dispatch_stop()))
+            loop.add_signal_handler(CONT_SIGNAL,
+                    lambda: loop.create_task(self._dispatch_cont()))
+
     async def _setup_events(self):
         for plugin in self._plugins:
-            for event in EVENTS:
+            for event in I3_EVENTS + HUB_EVENTS:
                 handler = getattr(plugin, 'on_{}'.format(event), None)
                 if handler:
                     self._add_event_handler(event, handler)
-        await self._conn.subscribe(*list(self._event_handlers.keys()))
+        i3_events = (k for k in self._event_handlers.keys() if k in I3_EVENTS)
+        await self._conn.subscribe(*list(i3_events))
 
     async def _dispatch_event(self, event, payload):
-        handlers = self._event_handlers.get(event, [])
-        for handler in handlers:
+        for handler in self._event_handlers.get(event, []):
              self._loop.create_task(handler(self._i3api, payload))
 
-    def stop(self):
-        if self._closed:
+    async def _dispatch_stop(self):
+        if self._statusproc:
+            self._statusproc.send_signal(self._status_stop_sig)
+        return await self._dispatch_event('status_stop', None) 
+
+    async def _dispatch_cont(self):
+        if self._statusproc:
+            self._statusproc.send_signal(self._status_cont_sig)
+        return await self._dispatch_event('status_cont', None) 
+
+    async def _dispatch_update(self, line, first=False):
+        # unlike most events, status updates are processed serially to allow
+        # deterministic ordered processing by plugins
+        self._current_status_data = json.loads(line)
+        for handler in self._event_handlers.get('status_update', []):
+            await handler(self._i3api, self._current_status_data)
+        self._output_updated_status(first=first)
+
+    def _output_updated_status(self, first=False):
+        if not first:
+            sys.stdout.write(',')
+        sys.stdout.write(json.dumps(self._current_status_data))
+        sys.stdout.write('\n')
+
+    async def _dispatch_shutdown(self, payload):
+        # this should be called either when i3 shuts down or when i3hub is
+        # killed (connection closed by stop(), which results in "eof event")
+        assert not self._i3api._shutting_down
+        self._i3api._shutting_down = True
+        handlers = self._event_handlers.get('shutdown', [])
+        for handler in handlers:
+            await handler(self._i3api, payload)
+
+    async def _read_status(self, first=False):
+        line = await self._statusproc.stdout.readline()
+        if not line:
+            return False
+        if not first:
+            line = line[1:]
+        await self._dispatch_update(line.decode('utf-8', 'replace'),
+                first=first)
+        return True
+
+    async def _run_status(self):
+        # output initial similar to what i3status does in json mode, also
+        # allow plugins to modify the initial status data
+        sys.stdout.write(json.dumps({
+            'version': 1,
+            'stop_signal': STOP_SIGNAL,
+            'cont_signal': CONT_SIGNAL,
+            'click_events': True
+        }))
+        sys.stdout.write('\n[\n')
+        if not self._status_command:
+            await self._dispatch_update('[]\n', first=True)
             return
-        self._conn.close()
-        self._closed = True
+        self._statusproc = await asyncio.create_subprocess_exec(
+                *self._status_command, stdout=asyncio.subprocess.PIPE)
+        # ignore first line with version information
+        await self._statusproc.stdout.readline()
+        # ignore second line line with opening bracket
+        await self._statusproc.stdout.readline()
+        # dispatch initial status state
+        status_read = await self._read_status(first=True)
+        while status_read:
+            status_read = await self._read_status()
+        await self._statusproc.wait()
+
+    async def _dispatch_events(self):
+        while True:
+            event, payload = await self._conn.wait_event()
+            if event in ('shutdown', 'eof',):
+                await self._dispatch_shutdown(payload)
+                break
+            if event is not None:
+                await self._dispatch_event(event, payload)
 
     async def run(self):
         self._plugins = list(discover_plugins(self._config_dirs))
         self._conn = await connect(self._socket_path)
         self._loop = self._conn._loop
-        self._i3api = I3ApiWrapper(self._conn)
+        self._setup_signals()
+        self._i3api = I3ApiWrapper(self._conn,
+                get_status_cb=lambda: self._current_status_data,
+                update_status_cb=lambda: self._output_updated_status())
         await self._setup_events()
-        while True:
-            event, payload = await self._conn.wait_event()
-            if event in ('shutdown', 'eof',):
-                break
-            if event is not None:
-                await self._dispatch_event(event, payload)
+        tasks = [self._dispatch_events()]
+        if self._run_as_status:
+            tasks.append(self._run_status())
+        await asyncio.gather(*tasks)
+
+    def stop(self):
+        if self._closed:
+            return
+        if self._statusproc:
+            self._statusproc.terminate()
+        self._conn.close()
+        self._closed = True
 
 
 async def connect(socket_path=None, loop=None):
@@ -248,6 +369,8 @@ def parse_args():
     parser = argparse.ArgumentParser('i3 plugin manager')
     parser.add_argument('--config-dirs', default=':'.join(
         '{}/i3hub'.format(d) for d in XDG_CONFIG_DIRS))
+    parser.add_argument('--run-as-status', default=False, action='store_true')
+    parser.add_argument('--status-command', default=None)
     return parser.parse_args()
 
 
@@ -269,13 +392,13 @@ def discover_plugins(config_dirs):
 def main():
     args = parse_args()
     loop = asyncio.get_event_loop()
-    hub = I3Hub(args.config_dirs)
-    sig_handler = lambda: hub.stop()
-    loop.add_signal_handler(signal.SIGINT, sig_handler)
-    loop.add_signal_handler(signal.SIGTERM, sig_handler)
+    hub = I3Hub(config_dirs=args.config_dirs,
+            run_as_status=args.run_as_status,
+            status_command=(
+                shlex.split(args.status_command) if args.status_command
+                else None))
     loop.run_until_complete(hub.run())
     loop.close()
-    print('exiting...')
 
 
 if __name__ == '__main__':
