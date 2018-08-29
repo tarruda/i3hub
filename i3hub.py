@@ -239,7 +239,7 @@ class I3Hub(object):
                 if handler:
                     self._add_event_handler(event, handler)
         i3_events = (k for k in self._event_handlers.keys() if k in I3_EVENTS)
-        await self._conn.subscribe(*list(i3_events))
+        await self._conn.subscribe(list(i3_events))
 
     async def _dispatch_event(self, event, payload, serially=False):
         if serially:
