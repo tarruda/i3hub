@@ -14,7 +14,9 @@ import subprocess
 import sys
 
 
-from xdg.BaseDirectory import xdg_config_dirs as XDG_CONFIG_DIRS
+from xdg.BaseDirectory import (
+        xdg_config_dirs as XDG_CONFIG_DIRS,
+        get_runtime_dir as xdg_runtime_dir)
 
 
 STOP_SIGNAL = signal.SIGRTMAX
@@ -200,7 +202,7 @@ class I3ApiWrapper(object, metaclass=I3ApiWrapperMeta):
 
 class I3Hub(object):
     def __init__(self, config_dirs, socket_path=None, run_as_status=False,
-            status_command='i3status'):
+            status_command='i3status', log_file=None):
         self._socket_path = socket_path
         self._run_as_status = run_as_status
         self._status_command = status_command
@@ -211,10 +213,13 @@ class I3Hub(object):
         self._current_status_data = None
         self._plugins = None
         self._conn = None
-        self._loop = None
+        self._loop = asyncio.get_event_loop()
         self._i3api = None
+        self._stdin = None
+        self._stdout = None
         self._event_handlers = {}
         self._closed = False
+        self._log_file = log_file
 
     def _add_event_handler(self, event, handler):
         if event not in self._event_handlers:
@@ -269,9 +274,10 @@ class I3Hub(object):
 
     def _output_updated_status(self, first):
         if not first:
-            sys.stdout.write(',')
-        sys.stdout.write(json.dumps(self._current_status_data))
-        sys.stdout.write('\n')
+            self._stdout.write(','.encode('utf-8'))
+        self._stdout.write(
+                json.dumps(self._current_status_data).encode('utf-8'))
+        self._stdout.write('\n'.encode('utf-8'))
 
     async def _dispatch_shutdown(self, payload):
         # this should be called either when i3 shuts down or when i3hub is
@@ -291,21 +297,48 @@ class I3Hub(object):
         await self._dispatch_update(line.decode('utf-8', 'replace'), first)
         return True
 
+    async def _read_click_events(self):
+        # read opening bracket
+        await self._stdin.readline()
+        while not self._stdin.at_eof():
+            line = (await self._stdin.readline())
+            if not line:
+                print('reached EOF while reading stdin')
+                break
+            if line[0] == b',':
+                # remove leading comma
+                line = line[1:]
+            try:
+                click_event_payload = json.loads(line.decode('utf-8',
+                    'replace'))
+            except json.JSONDecodeError:
+                print('failed to parse click event: {}'.format(line))
+                continue
+            await self._dispatch_event('i3bar_click', click_event_payload)
+
     async def _run_status(self):
+        self._loop.create_task(self._read_click_events())
         # output initial similar to what i3status does in json mode, also
         # allow plugins to modify the initial status data
-        sys.stdout.write(json.dumps({
+        self._stdout.write(json.dumps({
             'version': 1,
             'stop_signal': STOP_SIGNAL,
             'cont_signal': CONT_SIGNAL,
             'click_events': True
-        }))
-        sys.stdout.write('\n[\n')
+        }).encode('utf-8'))
+        self._stdout.write('\n[\n'.encode('utf-8'))
         if not self._status_command:
             await self._dispatch_update('[]\n', True)
             return
+        # i3 will send stop/cont signals to the process group. use preexec_fn
+        # to ensure the child status process ignores our own STOP/CONT signal
+        # numbers. This must also be done by plugins spawn children.
+        def ignore_sigs():
+            signal.signal(STOP_SIGNAL, signal.SIG_IGN)
+            signal.signal(CONT_SIGNAL, signal.SIG_IGN)
         self._statusproc = await asyncio.create_subprocess_exec(
-                *self._status_command, stdout=asyncio.subprocess.PIPE)
+                *self._status_command, stdout=asyncio.subprocess.PIPE,
+                preexec_fn=ignore_sigs)
         # ignore first line with version information
         await self._statusproc.stdout.readline()
         # ignore second line line with opening bracket
@@ -325,19 +358,48 @@ class I3Hub(object):
             if event is not None:
                 await self._dispatch_event(event, payload)
 
+    async def _setup_stdio(self):
+        # save the orig stdout fd to a new file descriptor
+        saved_stdout = os.fdopen(os.dup(sys.stdout.fileno()), 'w', 1)
+        log = open(self._log_file, 'w', 1)
+        # We dup the log file fd to fds 1 and 2. This will redirect
+        # stdout/stderr output from both i3hub plugins and child processes
+        # to the log file
+        os.dup2(log.fileno(), sys.stdout.fileno())
+        os.dup2(log.fileno(), sys.stderr.fileno())
+        sys.stdout = log
+        sys.stderr = log
+        # create StreamReader for stdin
+        self._stdin = asyncio.StreamReader(loop=self._loop)
+        stdin_proto = asyncio.StreamReaderProtocol(self._stdin)
+        await self._loop.connect_read_pipe(lambda: stdin_proto, sys.stdin)
+        # create StreamWriter for the dupped stdout filefd
+        stdout_trans, stdout_proto = await self._loop.connect_write_pipe(
+                asyncio.streams.FlowControlMixin, saved_stdout)
+        self._stdout = asyncio.streams.StreamWriter(stdout_trans,
+                stdout_proto, None, self._loop)
+
     async def run(self):
+        if self._run_as_status:
+            # when running as status bar, redirect stderr to a file in order to
+            # avoid messing with i3bar protocol output.
+            await self._setup_stdio()
+            print('running i3hub as i3bar status')
+        print('starting i3hub')
         self._plugins = list(discover_plugins(self._config_dirs))
-        self._conn = await connect(self._socket_path)
-        self._loop = self._conn._loop
+        self._conn = await connect(self._socket_path, loop=self._loop)
         self._setup_signals()
         self._i3api = I3ApiWrapper(self._conn,
                 get_status_cb=lambda: self._current_status_data,
                 update_status_cb=lambda: self._output_updated_status(False))
         await self._setup_events()
-        await self._dispatch_event('init', None)
         tasks = [self._dispatch_events()]
+        # FIXME: only invoke 'init' event after the status has sent the opening
+        # bracket. This will prevent races where a plugin updates the status
+        # before the header has been sent
         if self._run_as_status:
             tasks.append(self._run_status())
+        await self._dispatch_event('init', None)
         await asyncio.gather(*tasks)
 
     def stop(self):
@@ -345,6 +407,8 @@ class I3Hub(object):
             return
         if self._statusproc:
             self._statusproc.terminate()
+        if self._stdin:
+            self._stdin.feed_eof()
         self._conn.close()
         self._closed = True
 
@@ -375,6 +439,8 @@ def parse_args():
         '{}/i3hub'.format(d) for d in XDG_CONFIG_DIRS))
     parser.add_argument('--run-as-status', default=False, action='store_true')
     parser.add_argument('--status-command', default=None)
+    parser.add_argument('--log-file',
+            default='{}/i3hub.log'.format(xdg_runtime_dir()))
     return parser.parse_args()
 
 
@@ -387,6 +453,7 @@ def discover_plugins(config_dirs):
         sys.path.insert(0, config_dir)
         importlib.import_module('plugins')
         for _, name, _ in pkgutil.iter_modules(path=[plugins_dir]):
+            print('loading {} from {}'.format(name, plugins_dir)) 
             name = '.{}'.format(name)
             if name not in loaded:
                 loaded.add(name)
@@ -400,7 +467,8 @@ def main():
             run_as_status=args.run_as_status,
             status_command=(
                 shlex.split(args.status_command) if args.status_command
-                else None))
+                else None),
+            log_file=args.log_file)
     loop.run_until_complete(hub.run())
     loop.close()
 
