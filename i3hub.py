@@ -81,7 +81,7 @@ class ParseSignal(argparse.Action):
         setattr(namespace, option_string[2:].replace('-', '_'), sigval)
 
 
-class I3AsyncConnectionMeta(type):
+class I3ConnectionMeta(type):
     def __new__(cls, clsname, superclasses, attrs):
         def gen_method(msg_type, handler):
             if len(handler) == 1:
@@ -98,39 +98,7 @@ class I3AsyncConnectionMeta(type):
         return type.__new__(cls, clsname, superclasses, attrs)
 
 
-class I3ConnectionMeta(type):
-    def __new__(cls, clsname, superclasses, attrs):
-        def gen_method(async_method):
-            def method(self, *args, **kwargs):
-                return self._conn._loop.run_until_complete(
-                        async_method(self._conn, *args, **kwargs))
-            return method
-
-        for message in MESSAGES:
-            name = message[0]
-            attrs[name] = gen_method(getattr(I3AsyncioConnection, name))
-
-        return type.__new__(cls, clsname, superclasses, attrs)
-
-
-class I3ApiWrapperMeta(type):
-    def __new__(cls, clsname, superclasses, attrs):
-        def gen_method(async_method):
-            def wrapper(self, *args, **kwargs):
-                if self._shutting_down:
-                    raise Exception('Cannot send messages when shutting down')
-                return async_method(self._conn, *args, **kwargs)
-            return wrapper
-
-        for message in MESSAGES:
-            name = message[0]
-            if name != 'subscribe':
-                attrs[name] = gen_method(getattr(I3AsyncioConnection, name))
-
-        return type.__new__(cls, clsname, superclasses, attrs)
-
-
-class I3AsyncioConnection(object, metaclass=I3AsyncConnectionMeta):
+class I3Connection(object, metaclass=I3ConnectionMeta):
     MAGIC = b'i3-ipc'
     HEADER_FORMAT = '={}sII'.format(len(MAGIC))
     HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
@@ -206,9 +174,21 @@ class I3AsyncioConnection(object, metaclass=I3AsyncConnectionMeta):
         self._writer.close()
 
 
-class I3Connection(object, metaclass=I3ConnectionMeta):
-    def __init__(self, conn):
-        self._conn = conn
+class I3ApiWrapperMeta(type):
+    def __new__(cls, clsname, superclasses, attrs):
+        def gen_method(async_method):
+            def wrapper(self, *args, **kwargs):
+                if self._shutting_down:
+                    raise Exception('Cannot send messages when shutting down')
+                return async_method(self._conn, *args, **kwargs)
+            return wrapper
+
+        for message in MESSAGES:
+            name = message[0]
+            if name != 'subscribe':
+                attrs[name] = gen_method(getattr(I3Connection, name))
+
+        return type.__new__(cls, clsname, superclasses, attrs)
 
 
 class I3ApiWrapper(object, metaclass=I3ApiWrapperMeta):
@@ -423,18 +403,11 @@ async def connect(socket_path=None, loop=None):
     if not loop:
         loop = asyncio.get_event_loop()
     reader, writer = await asyncio.open_unix_connection(socket_path, loop=loop)
-    return I3AsyncioConnection(loop, reader, writer)
+    return I3Connection(loop, reader, writer)
 
 
 def get_socket_path():
     return subprocess.check_output(['i3', '--get-socketpath']).decode().strip()
-
-
-def connect_sync(socket_path=None, loop=None):
-    if not loop:
-        loop = asyncio.get_event_loop()
-    async_conn = loop.run_until_complete(connect(socket_path, loop))
-    return I3Connection(async_conn)
 
 
 def discover_plugins(config_dirs):
