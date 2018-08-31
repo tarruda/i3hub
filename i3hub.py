@@ -50,6 +50,7 @@ I3_EVENTS = (
 
 HUB_EVENTS = (
     'init',
+    'i3bar_click',
     'status_update',
     'status_stop',
     'status_cont',
@@ -201,25 +202,25 @@ class I3ApiWrapper(object, metaclass=I3ApiWrapperMeta):
 
 
 class I3Hub(object):
-    def __init__(self, config_dirs, socket_path=None, run_as_status=False,
-            status_command='i3status', log_file=None):
-        self._socket_path = socket_path
-        self._run_as_status = run_as_status
+    def __init__(self, loop, conn, i3bar_reader, i3bar_writer,
+            plugins, status_command='i3status'):
+        self._loop = loop
+        self._conn = conn
+        self._i3bar_reader = i3bar_reader
+        self._i3bar_writer = i3bar_writer
+        self._plugins = plugins
         self._status_command = status_command
-        self._status_stop_sig = signal.SIGSTOP
-        self._status_cont_sig = signal.SIGCONT
-        self._config_dirs = config_dirs.split(':')
-        self._statusproc = None
+        self._status_command_stop_sig = signal.SIGSTOP
+        self._status_command_cont_sig = signal.SIGCONT
+        self._status_proc = None
         self._current_status_data = None
-        self._plugins = None
-        self._conn = None
-        self._loop = asyncio.get_event_loop()
         self._i3api = None
-        self._stdin = None
-        self._stdout = None
         self._event_handlers = {}
         self._closed = False
-        self._log_file = log_file
+
+    @property
+    def _run_as_status(self):
+        return self._i3bar_writer is not None
 
     def _add_event_handler(self, event, handler):
         if event not in self._event_handlers:
@@ -255,13 +256,13 @@ class I3Hub(object):
                  self._loop.create_task(handler(self._i3api, payload))
 
     async def _dispatch_stop(self):
-        if self._statusproc:
-            self._statusproc.send_signal(self._status_stop_sig)
+        if self._status_proc:
+            self._status_proc.send_signal(self._status_command_stop_sig)
         return await self._dispatch_event('status_stop', None) 
 
     async def _dispatch_cont(self):
-        if self._statusproc:
-            self._statusproc.send_signal(self._status_cont_sig)
+        if self._status_proc:
+            self._status_proc.send_signal(self._status_command_cont_sig)
         return await self._dispatch_event('status_cont', None) 
 
     async def _dispatch_update(self, line, first):
@@ -274,10 +275,10 @@ class I3Hub(object):
 
     def _output_updated_status(self, first):
         if not first:
-            self._stdout.write(','.encode('utf-8'))
-        self._stdout.write(
+            self._i3bar_writer.write(','.encode('utf-8'))
+        self._i3bar_writer.write(
                 json.dumps(self._current_status_data).encode('utf-8'))
-        self._stdout.write('\n'.encode('utf-8'))
+        self._i3bar_writer.write('\n'.encode('utf-8'))
 
     async def _dispatch_shutdown(self, payload):
         # this should be called either when i3 shuts down or when i3hub is
@@ -289,7 +290,7 @@ class I3Hub(object):
             await handler(self._i3api, payload)
 
     async def _read_status(self, first=False):
-        line = await self._statusproc.stdout.readline()
+        line = await self._status_proc.stdout.readline()
         if not line:
             return False
         if not first:
@@ -299,9 +300,9 @@ class I3Hub(object):
 
     async def _read_click_events(self):
         # read opening bracket
-        await self._stdin.readline()
-        while not self._stdin.at_eof():
-            line = (await self._stdin.readline())
+        await self._i3bar_reader.readline()
+        while not self._i3bar_reader.at_eof():
+            line = (await self._i3bar_reader.readline())
             if not line:
                 print('reached EOF while reading stdin')
                 break
@@ -317,16 +318,19 @@ class I3Hub(object):
             await self._dispatch_event('i3bar_click', click_event_payload)
 
     async def _run_status(self):
-        self._loop.create_task(self._read_click_events())
+        print('started running as status command')
+        click_events = self._i3bar_reader is not None
+        if click_events:
+            self._loop.create_task(self._read_click_events())
         # output initial similar to what i3status does in json mode, also
         # allow plugins to modify the initial status data
-        self._stdout.write(json.dumps({
+        self._i3bar_writer.write(json.dumps({
             'version': 1,
             'stop_signal': STOP_SIGNAL,
             'cont_signal': CONT_SIGNAL,
-            'click_events': True
+            'click_events': click_events
         }).encode('utf-8'))
-        self._stdout.write('\n[\n'.encode('utf-8'))
+        self._i3bar_writer.write('\n[\n'.encode('utf-8'))
         if not self._status_command:
             await self._dispatch_update('[]\n', True)
             return
@@ -336,20 +340,21 @@ class I3Hub(object):
         def ignore_sigs():
             signal.signal(STOP_SIGNAL, signal.SIG_IGN)
             signal.signal(CONT_SIGNAL, signal.SIG_IGN)
-        self._statusproc = await asyncio.create_subprocess_exec(
+        self._status_proc = await asyncio.create_subprocess_exec(
                 *self._status_command, stdout=asyncio.subprocess.PIPE,
                 preexec_fn=ignore_sigs)
         # ignore first line with version information
-        await self._statusproc.stdout.readline()
+        await self._status_proc.stdout.readline()
         # ignore second line line with opening bracket
-        await self._statusproc.stdout.readline()
+        await self._status_proc.stdout.readline()
         # dispatch initial status state
         status_read = await self._read_status(first=True)
         while status_read:
             status_read = await self._read_status()
-        await self._statusproc.wait()
+        await self._status_proc.wait()
 
     async def _dispatch_events(self):
+        print('started dispatching events')
         while True:
             event, payload = await self._conn.wait_event()
             if event in ('shutdown', 'eof',):
@@ -358,36 +363,8 @@ class I3Hub(object):
             if event is not None:
                 await self._dispatch_event(event, payload)
 
-    async def _setup_stdio(self):
-        # save the orig stdout fd to a new file descriptor
-        saved_stdout = os.fdopen(os.dup(sys.stdout.fileno()), 'w', 1)
-        log = open(self._log_file, 'w', 1)
-        # We dup the log file fd to fds 1 and 2. This will redirect
-        # stdout/stderr output from both i3hub plugins and child processes
-        # to the log file
-        os.dup2(log.fileno(), sys.stdout.fileno())
-        os.dup2(log.fileno(), sys.stderr.fileno())
-        sys.stdout = log
-        sys.stderr = log
-        # create StreamReader for stdin
-        self._stdin = asyncio.StreamReader(loop=self._loop)
-        stdin_proto = asyncio.StreamReaderProtocol(self._stdin)
-        await self._loop.connect_read_pipe(lambda: stdin_proto, sys.stdin)
-        # create StreamWriter for the dupped stdout filefd
-        stdout_trans, stdout_proto = await self._loop.connect_write_pipe(
-                asyncio.streams.FlowControlMixin, saved_stdout)
-        self._stdout = asyncio.streams.StreamWriter(stdout_trans,
-                stdout_proto, None, self._loop)
-
     async def run(self):
-        if self._run_as_status:
-            # when running as status bar, redirect stderr to a file in order to
-            # avoid messing with i3bar protocol output.
-            await self._setup_stdio()
-            print('running i3hub as i3bar status')
-        print('starting i3hub')
-        self._plugins = list(discover_plugins(self._config_dirs))
-        self._conn = await connect(self._socket_path, loop=self._loop)
+        print('starting')
         self._setup_signals()
         self._i3api = I3ApiWrapper(self._conn,
                 get_status_cb=lambda: self._current_status_data,
@@ -401,14 +378,16 @@ class I3Hub(object):
             tasks.append(self._run_status())
         await self._dispatch_event('init', None)
         await asyncio.gather(*tasks)
+        print('stopped')
 
     def stop(self):
         if self._closed:
             return
-        if self._statusproc:
-            self._statusproc.terminate()
-        if self._stdin:
-            self._stdin.feed_eof()
+        print('stopping')
+        if self._status_proc:
+            self._status_proc.terminate()
+        if self._i3bar_reader:
+            self._i3bar_reader.feed_eof()
         self._conn.close()
         self._closed = True
 
@@ -460,16 +439,52 @@ def discover_plugins(config_dirs):
                 yield importlib.import_module(name, package='plugins')
 
 
+async def redirect_stdio(log_file, loop):
+    print('redirecting stdio to run i3hub as i3bar status')
+    # save the orig stdout fd to a new file descriptor
+    saved_stdout = os.fdopen(os.dup(sys.stdout.fileno()), 'w', 1)
+    log = open(log_file, 'w', 1)
+    # We dup the log file fd to fds 1 and 2. This will redirect
+    # stdout/stderr output from both i3hub plugins and child processes
+    # to the log file
+    os.dup2(log.fileno(), sys.stdout.fileno())
+    os.dup2(log.fileno(), sys.stderr.fileno())
+    sys.stdout = log
+    sys.stderr = log
+    # create StreamReader for stdin
+    stdin = asyncio.StreamReader(loop=loop)
+    stdin_proto = asyncio.StreamReaderProtocol(stdin)
+    await loop.connect_read_pipe(lambda: stdin_proto, sys.stdin)
+    # create StreamWriter for the dupped stdout filefd
+    stdout_trans, stdout_proto = await loop.connect_write_pipe(
+            asyncio.streams.FlowControlMixin, saved_stdout)
+    stdout = asyncio.streams.StreamWriter(stdout_trans, stdout_proto, None,
+            loop)
+    return stdin, stdout
+
+
+async def i3hub_main(args, loop):
+    # load plugins
+    plugins = list(discover_plugins(args.config_dirs.split(':')))
+    # connect to i3
+    conn = await connect(loop=loop)
+    if args.run_as_status:
+        # prepare stdio and logging for running as i3bar status 
+        i3bar_reader, i3bar_writer = await redirect_stdio(args.log_file, loop)
+    else:
+        i3bar_reader, i3bar_writer = None, None
+    status_command = (
+                shlex.split(args.status_command) if args.status_command
+                else None)
+    hub = I3Hub(loop, conn, i3bar_reader, i3bar_writer, plugins,
+            status_command)
+    await hub.run()
+
+
 def main():
     args = parse_args()
     loop = asyncio.get_event_loop()
-    hub = I3Hub(config_dirs=args.config_dirs,
-            run_as_status=args.run_as_status,
-            status_command=(
-                shlex.split(args.status_command) if args.status_command
-                else None),
-            log_file=args.log_file)
-    loop.run_until_complete(hub.run())
+    loop.run_until_complete(i3hub_main(args, loop))
     loop.close()
 
 
