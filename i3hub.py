@@ -7,6 +7,7 @@ import json
 import importlib
 import os
 import pkgutil
+import re
 import signal
 import shlex
 import struct
@@ -55,6 +56,29 @@ HUB_EVENTS = (
     'status_stop',
     'status_cont',
 )
+
+
+class ParseSignal(argparse.Action):
+    def __call__(self, parser, namespace, value, option_string=None):
+        if namespace.status_command is None:
+            return parser.error(
+                    '{} should only be specified with --status-command'.format(
+                        option_string))
+
+        match = re.match('^(SIG[A-Z]+)(?:\s*([\+\-])\s*(\d+)\s*)?$', value)
+        errmsg = '"{}" is not a valid signal'.format(value)
+        if not match:
+            return parser.error(errmsg)
+        groups = match.groups()
+        if not hasattr(signal, groups[0]):
+            return parser.error(errmsg)
+        sigval = getattr(signal, groups[0])
+        if groups[1]:
+            if groups[1] == '+':
+                sigval += int(groups[2])
+            else:
+                sigval -= int(groups[2])
+        setattr(namespace, option_string[2:].replace('-', '_'), sigval)
 
 
 class I3AsyncConnectionMeta(type):
@@ -203,15 +227,18 @@ class I3ApiWrapper(object, metaclass=I3ApiWrapperMeta):
 
 class I3Hub(object):
     def __init__(self, loop, conn, i3bar_reader, i3bar_writer,
-            plugins, status_command='i3status'):
+            plugins, status_command='i3status',
+            status_command_stop_signal=None, status_command_cont_signal=None):
         self._loop = loop
         self._conn = conn
         self._i3bar_reader = i3bar_reader
         self._i3bar_writer = i3bar_writer
         self._plugins = plugins
         self._status_command = status_command
-        self._status_command_stop_sig = signal.SIGSTOP
-        self._status_command_cont_sig = signal.SIGCONT
+        self._status_command_stop_sig = (status_command_stop_signal or
+                signal.SIGSTOP)
+        self._status_command_cont_sig = (status_command_cont_signal or
+                signal.SIGCONT)
         self._status_proc = None
         self._current_status_data = None
         self._i3api = None
@@ -322,8 +349,6 @@ class I3Hub(object):
         click_events = self._i3bar_reader is not None
         if click_events:
             self._loop.create_task(self._read_click_events())
-        # output initial similar to what i3status does in json mode, also
-        # allow plugins to modify the initial status data
         self._i3bar_writer.write(json.dumps({
             'version': 1,
             'stop_signal': STOP_SIGNAL,
@@ -412,16 +437,6 @@ def connect_sync(socket_path=None, loop=None):
     return I3Connection(async_conn)
 
 
-def parse_args():
-    parser = argparse.ArgumentParser('i3 plugin manager')
-    parser.add_argument('--config-dirs', default=':'.join(
-        '{}/i3hub'.format(d) for d in XDG_CONFIG_DIRS))
-    parser.add_argument('--run-as-status', default=False, action='store_true')
-    parser.add_argument('--status-command', default=None)
-    parser.add_argument('--log-file', default=None)
-    return parser.parse_args()
-
-
 def discover_plugins(config_dirs):
     loaded = set()
     for config_dir in config_dirs:
@@ -486,12 +501,30 @@ async def i3hub_main(loop, args):
                 shlex.split(args.status_command) if args.status_command
                 else None)
     hub = I3Hub(loop, conn, i3bar_reader, i3bar_writer, plugins,
-            status_command)
+            status_command, args.status_command_stop_signal,
+            args.status_command_cont_signal)
     await hub.run()
+
+
+def parse_args():
+    parser = argparse.ArgumentParser('i3hub')
+    parser.add_argument('--config-dirs', default=':'.join(
+        '{}/i3hub'.format(d) for d in XDG_CONFIG_DIRS))
+    parser.add_argument('--run-as-status', default=False, action='store_true')
+    parser.add_argument('--status-command', default=None)
+    parser.add_argument('--status-command-stop-signal', default=None,
+            action=ParseSignal)
+    parser.add_argument('--status-command-cont-signal', default=None,
+            action=ParseSignal)
+    parser.add_argument('--log-file', default=None)
+    return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    if args.status_command:
+        # imply --run-as-status
+        args.run_as_status = True
     loop = asyncio.get_event_loop()
     loop.run_until_complete(i3hub_main(loop, args))
     loop.close()
