@@ -5,6 +5,7 @@ import asyncio
 import collections
 import json
 import importlib
+import inspect
 import os
 import pkgutil
 import re
@@ -51,7 +52,7 @@ I3_EVENTS = (
 
 HUB_EVENTS = (
     'init',
-    'i3bar_click',
+    'status_click',
     'status_update',
     'status_stop',
     'status_cont',
@@ -230,6 +231,10 @@ class I3Hub(object):
         return self._i3bar_writer is not None
 
     def _add_event_handler(self, event, handler):
+        print('subscribing {handler} ({module}) to event "{event}"'.format(
+            handler=handler,
+            module=sys.modules[handler.__module__].__file__,
+            event=event))
         if event not in self._event_handlers:
             self._event_handlers[event] = []
         self._event_handlers[event].append(handler)
@@ -246,13 +251,20 @@ class I3Hub(object):
                     lambda: loop.create_task(self._dispatch_cont()))
 
     async def _setup_events(self):
+        def is_event_handler(obj):
+            return hasattr(obj, '_i3hub_listen_to')
+
+        subscribed_i3_events = set()
         for plugin in self._plugins:
-            for event in I3_EVENTS + HUB_EVENTS:
-                handler = getattr(plugin, 'on_{}'.format(event), None)
-                if handler:
+            for _, handler in inspect.getmembers(plugin, is_event_handler):
+                for event in handler._i3hub_listen_to:
+                    event.split('::', maxsplit=1)
+                    ns, ev = event.split('::', maxsplit=1)
+                    if ns == 'i3':
+                        subscribed_i3_events.add(ev)
                     self._add_event_handler(event, handler)
-        i3_events = (k for k in self._event_handlers.keys() if k in I3_EVENTS)
-        await self._conn.subscribe(list(i3_events))
+        # subscribe the connection to all i3 events listened by plugins
+        await self._conn.subscribe(list(subscribed_i3_events))
 
     async def _dispatch_event(self, event, payload, serially=False):
         if serially:
@@ -265,19 +277,19 @@ class I3Hub(object):
     async def _dispatch_stop(self):
         if self._status_proc:
             self._status_proc.send_signal(self._status_command_stop_sig)
-        return await self._dispatch_event('status_stop', None) 
+        return await self._dispatch_event('i3hub::status_stop', None) 
 
     async def _dispatch_cont(self):
         if self._status_proc:
             self._status_proc.send_signal(self._status_command_cont_sig)
-        return await self._dispatch_event('status_cont', None) 
+        return await self._dispatch_event('i3hub::status_cont', None) 
 
     async def _dispatch_update(self, line, first):
         # unlike most events, status updates are processed serially to allow
         # deterministic ordered processing by plugins
         self._current_status_data = json.loads(line)
-        await self._dispatch_event('status_update', self._current_status_data,
-                serially=True)
+        await self._dispatch_event('i3hub::status_update',
+                self._current_status_data, serially=True)
         self._output_updated_status(first)
 
     def _output_updated_status(self, first):
@@ -292,7 +304,7 @@ class I3Hub(object):
         # killed (connection closed by stop(), which results in "eof event")
         assert not self._i3api._shutting_down
         self._i3api._shutting_down = True
-        handlers = self._event_handlers.get('shutdown', [])
+        handlers = self._event_handlers.get('i3::shutdown', [])
         for handler in handlers:
             await handler(self._i3api, payload)
 
@@ -322,7 +334,8 @@ class I3Hub(object):
             except json.JSONDecodeError:
                 print('failed to parse click event: {}'.format(line))
                 continue
-            await self._dispatch_event('i3bar_click', click_event_payload)
+            await self._dispatch_event('i3hub::status_click',
+                    click_event_payload)
 
     async def _run_status(self):
         print('started running as status command')
@@ -366,7 +379,7 @@ class I3Hub(object):
                 await self._dispatch_shutdown(payload)
                 break
             if event is not None:
-                await self._dispatch_event(event, payload)
+                await self._dispatch_event('i3::' + event, payload)
 
     async def run(self):
         print('starting')
@@ -381,7 +394,7 @@ class I3Hub(object):
         # before the header has been sent
         if self._run_as_status:
             tasks.append(self._run_status())
-        await self._dispatch_event('init', None)
+        await self._dispatch_event('i3hub::init', None)
         await asyncio.gather(*tasks)
         print('stopped')
 
@@ -395,6 +408,27 @@ class I3Hub(object):
             self._i3bar_reader.feed_eof()
         self._conn.close()
         self._closed = True
+
+
+def listen(event):
+    split = event.split('::', maxsplit=1)
+    if len(split) != 2:
+        raise Exception('"{}" is not a valid event name'.format(event))
+    ns, ev = split
+    if ns not in ['i3', 'i3hub', 'plugin']:
+        raise Exception('Invalid event namespace "{}"'.format(ns))
+    if ns == 'i3' and ev not in I3_EVENTS:
+        raise Exception('Invalid i3 event "{}"'.format(ev))
+    if ns == 'i3hub' and ev not in HUB_EVENTS:
+        raise Exception('Invalid i3hub event "{}"'.format(ev))
+    def dec(fn):
+        if not inspect.iscoroutinefunction(fn):
+            raise Exception('Only coroutine functions can be event listeners')
+        if not hasattr(fn, '_i3hub_listen_to'):
+            fn._i3hub_listen_to = []
+        fn._i3hub_listen_to.append(event)
+        return fn
+    return dec
 
 
 async def connect(socket_path=None, loop=None):
