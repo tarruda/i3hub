@@ -418,8 +418,7 @@ def parse_args():
         '{}/i3hub'.format(d) for d in XDG_CONFIG_DIRS))
     parser.add_argument('--run-as-status', default=False, action='store_true')
     parser.add_argument('--status-command', default=None)
-    parser.add_argument('--log-file',
-            default='{}/i3hub.log'.format(xdg_runtime_dir()))
+    parser.add_argument('--log-file', default=None)
     return parser.parse_args()
 
 
@@ -439,10 +438,23 @@ def discover_plugins(config_dirs):
                 yield importlib.import_module(name, package='plugins')
 
 
-async def redirect_stdio(log_file, loop):
-    print('redirecting stdio to run i3hub as i3bar status')
-    # save the orig stdout fd to a new file descriptor
-    saved_stdout = os.fdopen(os.dup(sys.stdout.fileno()), 'w', 1)
+async def setup_i3bar_streams(loop):
+    # dup stdout fd and use to write i3bar updates, since it is possible that
+    # stdout original fd will be closed for logging
+    new_stdout = os.fdopen(os.dup(sys.stdout.fileno()), 'w', 1)
+    # create StreamReader for stdin
+    stdin = asyncio.StreamReader(loop=loop)
+    stdin_proto = asyncio.StreamReaderProtocol(stdin)
+    await loop.connect_read_pipe(lambda: stdin_proto, sys.stdin)
+    # create StreamWriter for the dupped stdout fd
+    stdout_trans, stdout_proto = await loop.connect_write_pipe(
+            asyncio.streams.FlowControlMixin, new_stdout)
+    stdout = asyncio.streams.StreamWriter(stdout_trans, stdout_proto, None,
+            loop)
+    return stdin, stdout
+
+
+def setup_logging(loop, log_file):
     log = open(log_file, 'w', 1)
     # We dup the log file fd to fds 1 and 2. This will redirect
     # stdout/stderr output from both i3hub plugins and child processes
@@ -451,28 +463,25 @@ async def redirect_stdio(log_file, loop):
     os.dup2(log.fileno(), sys.stderr.fileno())
     sys.stdout = log
     sys.stderr = log
-    # create StreamReader for stdin
-    stdin = asyncio.StreamReader(loop=loop)
-    stdin_proto = asyncio.StreamReaderProtocol(stdin)
-    await loop.connect_read_pipe(lambda: stdin_proto, sys.stdin)
-    # create StreamWriter for the dupped stdout filefd
-    stdout_trans, stdout_proto = await loop.connect_write_pipe(
-            asyncio.streams.FlowControlMixin, saved_stdout)
-    stdout = asyncio.streams.StreamWriter(stdout_trans, stdout_proto, None,
-            loop)
-    return stdin, stdout
 
 
-async def i3hub_main(args, loop):
+async def i3hub_main(loop, args):
+    if args.run_as_status:
+        # this must be done before redirecting stdout for logging
+        i3bar_reader, i3bar_writer = await setup_i3bar_streams(loop)
+    else:
+        i3bar_reader, i3bar_writer = None, None
+    if args.log_file or args.run_as_status:
+        if not args.log_file:
+            # even if a log file is not specified, always use one when running
+            # as i3bar status since stdout is already used for writing status
+            # updates.
+            args.log_file = '{}/i3hub.log'.format(xdg_runtime_dir())
+        setup_logging(loop, args.log_file)
     # load plugins
     plugins = list(discover_plugins(args.config_dirs.split(':')))
     # connect to i3
     conn = await connect(loop=loop)
-    if args.run_as_status:
-        # prepare stdio and logging for running as i3bar status 
-        i3bar_reader, i3bar_writer = await redirect_stdio(args.log_file, loop)
-    else:
-        i3bar_reader, i3bar_writer = None, None
     status_command = (
                 shlex.split(args.status_command) if args.status_command
                 else None)
@@ -484,7 +493,7 @@ async def i3hub_main(args, loop):
 def main():
     args = parse_args()
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(i3hub_main(args, loop))
+    loop.run_until_complete(i3hub_main(loop, args))
     loop.close()
 
 
