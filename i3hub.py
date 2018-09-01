@@ -49,6 +49,7 @@ I3_EVENTS = (
     'barconfig_update',
     'binding',
     'shutdown',
+    'tick',
 )
 
 HUB_EVENTS = (

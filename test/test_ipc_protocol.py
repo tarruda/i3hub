@@ -31,6 +31,28 @@ msg_tests = [
 
 @pytest.mark.parametrize('call_method,type,payload,reply', msg_tests)
 async def test_messages(i3mock, i3conn, call_method, type, payload, reply):
-    i3mock.expect(i3msg(type, payload), i3msg(type, reply))
+    i3mock.expect_request(i3msg(type, payload), i3msg(type, reply))
     assert json.loads(reply) == await call_method(i3conn)
     i3mock.verify()
+
+
+def i3event(msg_type, msg_payload):
+    body = msg_payload.encode('utf-8')
+    header = b'i3-ipc' + struct.pack('=II', len(body), msg_type | 0x80000000)
+    return header + body
+
+event_tests = [
+    (i3event(0, '{}'), ('workspace', {})),
+    (i3event(1, '{}'), ('output', {})),
+    (i3event(2, '{}'), ('mode', {})),
+    (i3event(3, '{}'), ('window', {})),
+    (i3event(4, '{}'), ('barconfig_update', {})),
+    (i3event(5, '{}'), ('binding', {})),
+    (i3event(6, '{}'), ('shutdown', {})),
+    (i3event(7, '{}'), ('tick', {})),
+]
+
+@pytest.mark.parametrize('event_payload,result', event_tests)
+async def test_events(i3mock, i3conn, event_payload, result):
+    i3mock.send_event(event_payload)
+    assert result == await i3conn.wait_event()
