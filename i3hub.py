@@ -21,6 +21,7 @@ from xdg.BaseDirectory import (
         get_runtime_dir as xdg_runtime_dir)
 
 
+JSON_SEPS = (',', ':')
 STOP_SIGNAL = signal.SIGRTMAX
 CONT_SIGNAL = signal.SIGRTMAX - 1
 
@@ -28,15 +29,15 @@ CONT_SIGNAL = signal.SIGRTMAX - 1
 MESSAGES = (
     ('command', lambda cmd_str: cmd_str),
     ('get_workspaces',),
-    ('subscribe', lambda events: json.dumps(events)),
+    ('subscribe', lambda events: json.dumps(events, separators=JSON_SEPS)),
     ('get_outputs',),
     ('get_tree',),
     ('get_marks',),
-    ('get_bar_config', lambda bar_config_name='': bar_config_name),
+    ('get_bar_config', lambda bar_config_name: bar_config_name or ''),
     ('get_version',),
     ('get_binding_modes',),
     ('get_config',),
-    ('send_tick', lambda payload: payload),
+    ('send_tick', lambda payload: payload or ''),
 )
 
 
@@ -138,7 +139,7 @@ class I3Connection(object, metaclass=I3ConnectionMeta):
 
     async def _recv(self):
         assert not self._eof
-        header_data = await self._reader.read(self.HEADER_SIZE)
+        header_data = await self._reader.readexactly(self.HEADER_SIZE)
         if len(header_data) == 0:
             self._eof = True
             return 'eof', None, None
@@ -146,8 +147,9 @@ class I3Connection(object, metaclass=I3ConnectionMeta):
                 header_data)
         is_event = (msg_type >> 31) == 1
         msg_type = msg_type & 0x7f
-        payload = json.loads((await self._reader.read(msg_length)).decode(
-            'utf-8', 'replace'))
+        payload = json.loads(
+                (await self._reader.readexactly(msg_length)).decode(
+                    'utf-8', 'replace'))
         return msg_type, is_event, payload
 
     async def _poll(self):
@@ -158,7 +160,7 @@ class I3Connection(object, metaclass=I3ConnectionMeta):
             self._event_queue.append(('eof', None))
         elif is_event:
             self._event_queue.append((I3_EVENTS[msg_type], payload))
-        elif payload:
+        else:
             assert self._reply
             self._reply.set_result(payload)
 
@@ -296,7 +298,8 @@ class I3Hub(object):
         if not first:
             self._i3bar_writer.write(','.encode('utf-8'))
         self._i3bar_writer.write(
-                json.dumps(self._current_status_data).encode('utf-8'))
+                json.dumps(self._current_status_data,
+                    separators=JSON_SEPS).encode('utf-8'))
         self._i3bar_writer.write('\n'.encode('utf-8'))
 
     async def _dispatch_shutdown(self, payload):
@@ -347,7 +350,7 @@ class I3Hub(object):
             'stop_signal': STOP_SIGNAL,
             'cont_signal': CONT_SIGNAL,
             'click_events': click_events
-        }).encode('utf-8'))
+        }, separators=JSON_SEPS).encode('utf-8'))
         self._i3bar_writer.write('\n[\n'.encode('utf-8'))
         if not self._status_command:
             await self._dispatch_update('[]\n', True)
