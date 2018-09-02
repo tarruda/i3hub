@@ -216,7 +216,8 @@ class I3ApiWrapper(object, metaclass=I3ApiWrapperMeta):
 class I3Hub(object):
     def __init__(self, loop, conn, i3bar_reader, i3bar_writer,
             plugins, status_command='i3status',
-            status_command_stop_signal=None, status_command_cont_signal=None):
+            status_command_stop_signal=None, status_command_cont_signal=None,
+            status_output_sort_keys=False):
         self._loop = loop
         self._conn = conn
         self._i3bar_reader = i3bar_reader
@@ -227,6 +228,7 @@ class I3Hub(object):
                 signal.SIGSTOP)
         self._status_command_cont_sig = (status_command_cont_signal or
                 signal.SIGCONT)
+        self._status_output_sort_keys = status_output_sort_keys
         self._status_proc = None
         self._current_status_data = None
         self._i3api = None
@@ -293,7 +295,8 @@ class I3Hub(object):
             self._i3bar_writer.write(','.encode('utf-8'))
         self._i3bar_writer.write(
                 json.dumps(self._current_status_data,
-                    separators=JSON_SEPS).encode('utf-8'))
+                    separators=JSON_SEPS,
+                    sort_keys=self._status_output_sort_keys).encode('utf-8'))
         self._i3bar_writer.write('\n'.encode('utf-8'))
 
     async def _dispatch_shutdown(self, arg):
@@ -315,12 +318,15 @@ class I3Hub(object):
     async def _read_click_events(self):
         # read opening bracket
         await self._i3bar_reader.readline()
+        is_first = True
         while not self._i3bar_reader.at_eof():
             line = (await self._i3bar_reader.readline())
             if not line:
                 print('reached EOF while reading stdin')
                 break
-            if line[0] == b',':
+            if is_first:
+                is_first = False
+            else:
                 # remove leading comma
                 line = line[1:]
             try:
@@ -342,7 +348,8 @@ class I3Hub(object):
             'stop_signal': STOP_SIGNAL,
             'cont_signal': CONT_SIGNAL,
             'click_events': click_events
-        }, separators=JSON_SEPS).encode('utf-8'))
+        }, separators=JSON_SEPS,
+        sort_keys=self._status_output_sort_keys).encode('utf-8'))
         self._i3bar_writer.write('\n[\n'.encode('utf-8'))
         if not self._status_command:
             await self._dispatch_update('[]\n', True)

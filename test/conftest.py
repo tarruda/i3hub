@@ -4,7 +4,7 @@ import os
 import pytest
 
 from .mock import I3Mock, I3BarMock, i3msg
-from .plugin import Plugin
+from .plugin import I3Events, StatusEvents, PluginEvents
 from ..i3hub import I3Connection, I3Hub
 
 
@@ -57,7 +57,7 @@ class I3(object):
                 await stream_pipe(loop))
         self.barmock = I3BarMock(loop, breader, bwriter)
         self.hub = I3Hub(loop, self.conn, hreader, hwriter, self._plugins,
-                status_command=None)
+                status_command=None, status_output_sort_keys=True)
         tasks = [self.barmock.run(), self.mock.run()]
         if self._run_i3hub:
             # tell I3Mock to expect and reply to a subscribe request from I3Hub
@@ -87,13 +87,24 @@ class I3(object):
 
 
 @pytest.fixture
-def events():
+def i3events():
     return []
 
 
 @pytest.fixture
-def plugins(events):
-    return [Plugin(events)]
+def statusevents():
+    return []
+
+
+@pytest.fixture
+def pluginevents():
+    return []
+
+
+@pytest.fixture
+def plugins(i3events, statusevents, pluginevents):
+    return [I3Events(i3events), StatusEvents(statusevents),
+            PluginEvents(pluginevents)]
 
 
 @pytest.fixture
