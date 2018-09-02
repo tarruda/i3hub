@@ -1,17 +1,12 @@
 import asyncio
 import json
-import struct
 
 import pytest
 
+from .mock import i3msg, i3event
 
 pytestmark = pytest.mark.asyncio
 
-
-def i3msg(msg_type, msg_payload):
-    body = msg_payload.encode('utf-8')
-    header = b'i3-ipc' + struct.pack('=II', len(body), msg_type)
-    return header + body
 
 msg_tests = [
     (lambda c: c.command('border normal'), 0, 
@@ -36,11 +31,6 @@ async def test_messages(i3mock, i3conn, call_method, type, payload, reply):
     i3mock.verify()
 
 
-def i3event(msg_type, msg_payload):
-    body = msg_payload.encode('utf-8')
-    header = b'i3-ipc' + struct.pack('=II', len(body), msg_type | 0x80000000)
-    return header + body
-
 event_tests = [
     (i3event(0, '{}'), ('workspace', {})),
     (i3event(1, '{}'), ('output', {})),
@@ -51,6 +41,7 @@ event_tests = [
     (i3event(6, '{}'), ('shutdown', {})),
     (i3event(7, '{}'), ('tick', {})),
 ]
+
 
 @pytest.mark.parametrize('event_payload,result', event_tests)
 async def test_events(i3mock, i3conn, event_payload, result):

@@ -140,17 +140,21 @@ class I3Connection(object, metaclass=I3ConnectionMeta):
 
     async def _recv(self):
         assert not self._eof
-        header_data = await self._reader.readexactly(self.HEADER_SIZE)
-        if len(header_data) == 0:
+        try:
+            header_data = await self._reader.readexactly(self.HEADER_SIZE)
+        except asyncio.IncompleteReadError:
             self._eof = True
             return 'eof', None, None
         magic, msg_length, msg_type = struct.unpack(self.HEADER_FORMAT,
                 header_data)
-        is_event = (msg_type >> 31) == 1
-        msg_type = msg_type & 0x7f
-        payload = json.loads(
-                (await self._reader.readexactly(msg_length)).decode(
-                    'utf-8', 'replace'))
+        is_event = msg_type & 0x80000000
+        msg_type &= 0x7fffffff
+        try:
+            body_data = await self._reader.readexactly(msg_length)
+        except asyncio.IncompleteReadError:
+            self._eof = True
+            return 'eof', None, None
+        payload = json.loads(body_data.decode('utf-8', 'replace'))
         return msg_type, is_event, payload
 
     async def _poll(self):
@@ -230,7 +234,7 @@ class I3Hub(object):
         self._closed = False
 
     @property
-    def _run_as_status(self):
+    def run_as_status(self):
         return self._i3bar_writer is not None
 
     def _add_event_handler(self, event, handler):
@@ -241,17 +245,6 @@ class I3Hub(object):
         if event not in self._event_handlers:
             self._event_handlers[event] = []
         self._event_handlers[event].append(handler)
-
-    def _setup_signals(self):
-        loop = self._loop
-        sig_handler = lambda: self.stop()
-        loop.add_signal_handler(signal.SIGINT, sig_handler)
-        loop.add_signal_handler(signal.SIGTERM, sig_handler)
-        if self._run_as_status:
-            loop.add_signal_handler(STOP_SIGNAL,
-                    lambda: loop.create_task(self._dispatch_stop()))
-            loop.add_signal_handler(CONT_SIGNAL,
-                    lambda: loop.create_task(self._dispatch_cont()))
 
     async def _setup_events(self):
         def is_event_handler(obj):
@@ -269,20 +262,20 @@ class I3Hub(object):
         # subscribe the connection to all i3 events listened by plugins
         await self._conn.subscribe(list(subscribed_i3_events))
 
-    async def _dispatch_event(self, event, payload, serially=False):
+    async def _dispatch_event(self, event, arg, serially=False):
         if serially:
             for handler in self._event_handlers.get(event, []):
-                await handler(self._i3api, payload)
+                await handler(self._i3api, event, arg)
         else:
             for handler in self._event_handlers.get(event, []):
-                 self._loop.create_task(handler(self._i3api, payload))
+                 self._loop.create_task(handler(self._i3api, event, arg))
 
-    async def _dispatch_stop(self):
+    async def dispatch_stop(self):
         if self._status_proc:
             self._status_proc.send_signal(self._status_command_stop_sig)
         return await self._dispatch_event('i3hub::status_stop', None) 
 
-    async def _dispatch_cont(self):
+    async def dispatch_cont(self):
         if self._status_proc:
             self._status_proc.send_signal(self._status_command_cont_sig)
         return await self._dispatch_event('i3hub::status_cont', None) 
@@ -303,14 +296,12 @@ class I3Hub(object):
                     separators=JSON_SEPS).encode('utf-8'))
         self._i3bar_writer.write('\n'.encode('utf-8'))
 
-    async def _dispatch_shutdown(self, payload):
+    async def _dispatch_shutdown(self, arg):
         # this should be called either when i3 shuts down or when i3hub is
-        # killed (connection closed by stop(), which results in "eof event")
+        # killed (connection closed by close(), which results in "eof event")
         assert not self._i3api._shutting_down
         self._i3api._shutting_down = True
-        handlers = self._event_handlers.get('i3::shutdown', [])
-        for handler in handlers:
-            await handler(self._i3api, payload)
+        await self._dispatch_event('i3::shutdown', arg, serially=True)
 
     async def _read_status(self, first=False):
         line = await self._status_proc.stdout.readline()
@@ -381,13 +372,15 @@ class I3Hub(object):
             event, payload = await self._conn.wait_event()
             if event in ('shutdown', 'eof',):
                 await self._dispatch_shutdown(payload)
+                self.close()
                 break
             if event is not None:
                 await self._dispatch_event('i3::' + event, payload)
 
-    async def run(self):
+    async def run(self, ready_future=None):
+        if self._closed:
+            raise Exception('This I3Hub instance was already closed')
         print('starting')
-        self._setup_signals()
         self._i3api = I3ApiWrapper(self._conn,
                 get_status_cb=lambda: self._current_status_data,
                 update_status_cb=lambda: self._output_updated_status(False))
@@ -396,13 +389,15 @@ class I3Hub(object):
         # FIXME: only invoke 'init' event after the status has sent the opening
         # bracket. This will prevent races where a plugin updates the status
         # before the header has been sent
-        if self._run_as_status:
+        if self.run_as_status:
             tasks.append(self._run_status())
         await self._dispatch_event('i3hub::init', None)
+        if ready_future:
+            ready_future.set_result(None)
         await asyncio.gather(*tasks)
         print('stopped')
 
-    def stop(self):
+    def close(self):
         if self._closed:
             return
         print('stopping')
@@ -491,6 +486,17 @@ def setup_logging(loop, log_file):
     sys.stderr = log
 
 
+def setup_signals(loop, hub):
+    sig_handler = lambda: hub.close()
+    loop.add_signal_handler(signal.SIGINT, sig_handler)
+    loop.add_signal_handler(signal.SIGTERM, sig_handler)
+    if hub.run_as_status:
+        loop.add_signal_handler(STOP_SIGNAL,
+                lambda: loop.create_task(hub.dispatch_stop()))
+        loop.add_signal_handler(CONT_SIGNAL,
+                lambda: loop.create_task(hub.dispatch_cont()))
+
+
 async def i3hub_main(loop, args):
     if args.run_as_status:
         # this must be done before redirecting stdout for logging
@@ -514,6 +520,7 @@ async def i3hub_main(loop, args):
     hub = I3Hub(loop, conn, i3bar_reader, i3bar_writer, plugins,
             status_command, args.status_command_stop_signal,
             args.status_command_cont_signal)
+    setup_signals(loop, hub)
     await hub.run()
 
 
