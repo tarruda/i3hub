@@ -97,3 +97,11 @@ async def test_i3bar_stop_cont_events(i3hub, i3api, statusevents):
     await i3hub.dispatch_cont()
     await spin()
     assert statusevents[1] == (i3api, 'i3hub::status_cont', None)
+
+
+async def test_plugin_event(i3api, pluginevents):
+    assert pluginevents == []
+    arg = []
+    await i3api.emit_event('some_plugin::custom', arg)
+    assert pluginevents[0] == (i3api, 'plugin::some_plugin::custom', arg)
+    assert arg == ['plugin-data']

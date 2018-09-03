@@ -33,6 +33,7 @@ class StatusEvents(Plugin):
 
 
 class PluginEvents(Plugin):
-    @listen('plugin::some-plugin::custom-event')
+    @listen('plugin::some_plugin::custom')
     async def event_handler(self, i3, event, arg):
         self._record_event(i3, event, arg)
+        arg.append('plugin-data')

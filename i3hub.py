@@ -200,17 +200,21 @@ class I3ApiWrapperMeta(type):
 
 
 class I3ApiWrapper(object, metaclass=I3ApiWrapperMeta):
-    def __init__(self, conn, get_status_cb, update_status_cb):
+    def __init__(self, conn, get_status_cb, update_status_cb, emit_event_cb):
         self._conn = conn
         self._shutting_down = False
         self._get_status_cb = get_status_cb
         self._update_status_cb = update_status_cb
+        self._emit_event_cb = emit_event_cb
 
     def get_status(self):
         return self._get_status_cb()
 
     def update_status(self):
         return self._update_status_cb()
+
+    async def emit_event(self, event, arg):
+        await self._emit_event_cb('plugin::' + event, arg)
 
 
 class I3Hub(object):
@@ -388,7 +392,8 @@ class I3Hub(object):
         print('starting')
         self._i3api = I3ApiWrapper(self._conn,
                 get_status_cb=lambda: self._current_status_data,
-                update_status_cb=lambda: self._output_updated_status())
+                update_status_cb=lambda: self._output_updated_status(),
+                emit_event_cb=self._dispatch_event)
         await self._setup_events()
         futures = []
         if self.run_as_status:
