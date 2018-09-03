@@ -230,7 +230,8 @@ class I3Hub(object):
                 signal.SIGCONT)
         self._status_output_sort_keys = status_output_sort_keys
         self._status_proc = None
-        self._current_status_data = None
+        self._current_status_data = []
+        self._first_status_update = True
         self._i3api = None
         self._event_handlers = {}
         self._closed = False
@@ -264,13 +265,9 @@ class I3Hub(object):
         # subscribe the connection to all i3 events listened by plugins
         await self._conn.subscribe(list(subscribed_i3_events))
 
-    async def _dispatch_event(self, event, arg, serially=False):
-        if serially:
-            for handler in self._event_handlers.get(event, []):
-                await handler(self._i3api, event, arg)
-        else:
-            for handler in self._event_handlers.get(event, []):
-                 self._loop.create_task(handler(self._i3api, event, arg))
+    async def _dispatch_event(self, event, arg):
+        for handler in self._event_handlers.get(event, []):
+            await handler(self._i3api, event, arg)
 
     async def dispatch_stop(self):
         if self._status_proc:
@@ -282,16 +279,16 @@ class I3Hub(object):
             self._status_proc.send_signal(self._status_command_cont_sig)
         return await self._dispatch_event('i3hub::status_cont', None) 
 
-    async def _dispatch_update(self, line, first):
-        # unlike most events, status updates are processed serially to allow
-        # deterministic ordered processing by plugins
+    async def _dispatch_update(self, line):
         self._current_status_data = json.loads(line)
         await self._dispatch_event('i3hub::status_update',
-                self._current_status_data, serially=True)
-        self._output_updated_status(first)
+                self._current_status_data)
+        self._output_updated_status()
 
-    def _output_updated_status(self, first):
-        if not first:
+    def _output_updated_status(self):
+        if self._first_status_update:
+            self._first_status_update = False
+        else:
             self._i3bar_writer.write(','.encode('utf-8'))
         self._i3bar_writer.write(
                 json.dumps(self._current_status_data,
@@ -304,7 +301,7 @@ class I3Hub(object):
         # killed (connection closed by close(), which results in "eof event")
         assert not self._i3api._shutting_down
         self._i3api._shutting_down = True
-        await self._dispatch_event('i3::shutdown', arg, serially=True)
+        await self._dispatch_event('i3::shutdown', arg)
 
     async def _read_status(self, first=False):
         line = await self._status_proc.stdout.readline()
@@ -312,7 +309,7 @@ class I3Hub(object):
             return False
         if not first:
             line = line[1:]
-        await self._dispatch_update(line.decode('utf-8', 'replace'), first)
+        await self._dispatch_update(line.decode('utf-8', 'replace'))
         return True
 
     async def _read_click_events(self):
@@ -338,7 +335,7 @@ class I3Hub(object):
             await self._dispatch_event('i3hub::status_click',
                     click_event_payload)
 
-    async def _run_status(self):
+    async def _run_status(self, status_ready):
         print('started running as status command')
         click_events = self._i3bar_reader is not None
         if click_events:
@@ -351,8 +348,8 @@ class I3Hub(object):
         }, separators=JSON_SEPS,
         sort_keys=self._status_output_sort_keys).encode('utf-8'))
         self._i3bar_writer.write('\n[\n'.encode('utf-8'))
+        status_ready.set_result(None)
         if not self._status_command:
-            await self._dispatch_update('[]\n', True)
             return
         # i3 will send stop/cont signals to the process group. use preexec_fn
         # to ensure the child status process ignores our own STOP/CONT signal
@@ -382,26 +379,32 @@ class I3Hub(object):
                 self.close()
                 break
             if event is not None:
-                await self._dispatch_event('i3::' + event, payload)
+                self._loop.create_task(
+                        self._dispatch_event('i3::' + event, payload))
 
-    async def run(self, ready_future=None):
+    async def run(self):
         if self._closed:
             raise Exception('This I3Hub instance was already closed')
         print('starting')
         self._i3api = I3ApiWrapper(self._conn,
                 get_status_cb=lambda: self._current_status_data,
-                update_status_cb=lambda: self._output_updated_status(False))
+                update_status_cb=lambda: self._output_updated_status())
         await self._setup_events()
-        tasks = [self._dispatch_events()]
-        # FIXME: only invoke 'init' event after the status has sent the opening
-        # bracket. This will prevent races where a plugin updates the status
-        # before the header has been sent
+        futures = []
         if self.run_as_status:
-            tasks.append(self._run_status())
+            # use a future to get notified when the _run_status task has
+            # written the opening bracket. This ensures plugins can't send a
+            # status update in the init event before the opening bracket is
+            # sent, which could result in a parse failure by i3bar
+            status_ready = asyncio.Future(loop=self._loop)
+            futures.append(asyncio.ensure_future(self._run_status(
+                status_ready)))
+            await status_ready
+        # dispatch the init event before reading events from i3
         await self._dispatch_event('i3hub::init', None)
-        if ready_future:
-            ready_future.set_result(None)
-        await asyncio.gather(*tasks)
+        # start reading events from i3
+        futures.append(asyncio.ensure_future(self._dispatch_events()))
+        await asyncio.gather(*futures)
         print('stopped')
 
     def close(self):

@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from .mock import i3msg, i3event
+from .util import i3msg, i3event
 
 pytestmark = pytest.mark.asyncio
 

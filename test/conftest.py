@@ -1,27 +1,11 @@
 import asyncio
-import os
 
 import pytest
 
-from .mock import I3Mock, I3BarMock, i3msg
+from .mock import I3Mock, I3BarMock
 from .plugin import I3Events, StatusEvents, PluginEvents
+from .util import spin, stream_pipe, i3msg
 from ..i3hub import I3Connection, I3Hub
-
-
-async def stream_pipe(loop):
-    r, w = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
-    # Wrap the read end of the pipe into a StreamReader
-    reader_fobj = os.fdopen(r, 'rb', 0)
-    reader = asyncio.StreamReader(loop=loop)
-    reader_proto = asyncio.StreamReaderProtocol(reader)
-    await loop.connect_read_pipe(lambda: reader_proto, reader_fobj)
-    # Wrap the write end of the pipe into a StreamWriter
-    writer_fobj = os.fdopen(w, 'wb', 0)
-    writer_trans, writer_proto = await loop.connect_write_pipe(
-            asyncio.streams.FlowControlMixin, writer_fobj)
-    writer = asyncio.streams.StreamWriter(writer_trans, writer_proto, None,
-            loop)
-    return reader, reader_fobj, writer, writer_fobj
 
 
 class I3(object):
@@ -64,12 +48,10 @@ class I3(object):
             self.mock.expect_request(
                     i3msg(2, '["window","shutdown"]'),
                     i3msg(2, '{"success":true}'))
-            # use a future to wait until i3hub has fully completed the setup
-            ready = asyncio.Future(loop=loop)
-            tasks.append(self.hub.run(ready))
+            tasks.append(self.hub.run())
         self._all_run_task = asyncio.ensure_future(asyncio.gather(*tasks))
         if self._run_i3hub:
-            await ready
+            await spin()
 
     async def teardown(self, loop):
         self.mock.close()

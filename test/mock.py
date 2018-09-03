@@ -1,17 +1,4 @@
 import asyncio
-import struct
-
-
-def i3msg(msg_type, msg_payload):
-    body = msg_payload.encode('utf-8')
-    header = b'i3-ipc' + struct.pack('=II', len(body), msg_type)
-    return header + body
-
-
-def i3event(msg_type, msg_payload):
-    body = msg_payload.encode('utf-8')
-    header = b'i3-ipc' + struct.pack('=II', len(body), msg_type | 0x80000000)
-    return header + body
 
 
 class Mock(object):
