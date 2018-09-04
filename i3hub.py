@@ -8,9 +8,7 @@ import importlib
 import inspect
 import os
 import pkgutil
-import re
 import signal
-import shlex
 import struct
 import subprocess
 import sys
@@ -59,29 +57,6 @@ HUB_EVENTS = (
     'status_stop',
     'status_cont',
 )
-
-
-class ParseSignal(argparse.Action):
-    def __call__(self, parser, namespace, value, option_string=None):
-        if namespace.status_command is None:
-            return parser.error(
-                    '{} should only be specified with --status-command'.format(
-                        option_string))
-
-        match = re.match('^(SIG[A-Z]+)(?:\s*([\+\-])\s*(\d+)\s*)?$', value)
-        errmsg = '"{}" is not a valid signal'.format(value)
-        if not match:
-            return parser.error(errmsg)
-        groups = match.groups()
-        if not hasattr(signal, groups[0]):
-            return parser.error(errmsg)
-        sigval = getattr(signal, groups[0])
-        if groups[1]:
-            if groups[1] == '+':
-                sigval += int(groups[2])
-            else:
-                sigval -= int(groups[2])
-        setattr(namespace, option_string[2:].replace('-', '_'), sigval)
 
 
 class I3ConnectionMeta(type):
@@ -219,21 +194,13 @@ class I3ApiWrapper(object, metaclass=I3ApiWrapperMeta):
 
 class I3Hub(object):
     def __init__(self, loop, conn, i3bar_reader, i3bar_writer,
-            plugins, status_command='i3status',
-            status_command_stop_signal=None, status_command_cont_signal=None,
-            status_output_sort_keys=False):
+            plugins, status_output_sort_keys=False):
         self._loop = loop
         self._conn = conn
         self._i3bar_reader = i3bar_reader
         self._i3bar_writer = i3bar_writer
         self._plugins = plugins
-        self._status_command = status_command
-        self._status_command_stop_sig = (status_command_stop_signal or
-                signal.SIGSTOP)
-        self._status_command_cont_sig = (status_command_cont_signal or
-                signal.SIGCONT)
         self._status_output_sort_keys = status_output_sort_keys
-        self._status_proc = None
         self._current_status_data = []
         self._first_status_update = True
         self._i3api = None
@@ -274,20 +241,10 @@ class I3Hub(object):
             await handler(self._i3api, event, arg)
 
     async def dispatch_stop(self):
-        if self._status_proc:
-            self._status_proc.send_signal(self._status_command_stop_sig)
         return await self._dispatch_event('i3hub::status_stop', None) 
 
     async def dispatch_cont(self):
-        if self._status_proc:
-            self._status_proc.send_signal(self._status_command_cont_sig)
         return await self._dispatch_event('i3hub::status_cont', None) 
-
-    async def _dispatch_update(self, line):
-        self._current_status_data = json.loads(line)
-        await self._dispatch_event('i3hub::status_update',
-                self._current_status_data)
-        self._output_updated_status()
 
     def _output_updated_status(self):
         if self._first_status_update:
@@ -303,25 +260,16 @@ class I3Hub(object):
     async def _dispatch_shutdown(self, arg):
         # this should be called either when i3 shuts down or when i3hub is
         # killed (connection closed by close(), which results in "eof event")
-        assert not self._i3api._shutting_down
-        self._i3api._shutting_down = True
-        await self._dispatch_event('i3::shutdown', arg)
-
-    async def _read_status(self, first=False):
-        line = await self._status_proc.stdout.readline()
-        if not line:
-            return False
-        if not first:
-            line = line[1:]
-        await self._dispatch_update(line.decode('utf-8', 'replace'))
-        return True
+        if not self._i3api._shutting_down:
+            self._i3api._shutting_down = True
+            await self._dispatch_event('i3::shutdown', arg)
 
     async def _read_click_events(self):
         # read opening bracket
         await self._i3bar_reader.readline()
         is_first = True
         while not self._i3bar_reader.at_eof():
-            line = (await self._i3bar_reader.readline())
+            line = await self._i3bar_reader.readline()
             if not line:
                 print('reached EOF while reading stdin')
                 break
@@ -353,33 +301,13 @@ class I3Hub(object):
         sort_keys=self._status_output_sort_keys).encode('utf-8'))
         self._i3bar_writer.write('\n[\n'.encode('utf-8'))
         status_ready.set_result(None)
-        if not self._status_command:
-            return
-        # i3 will send stop/cont signals to the process group. use preexec_fn
-        # to ensure the child status process ignores our own STOP/CONT signal
-        # numbers. This must also be done by plugins spawn children.
-        def ignore_sigs():
-            signal.signal(STOP_SIGNAL, signal.SIG_IGN)
-            signal.signal(CONT_SIGNAL, signal.SIG_IGN)
-        self._status_proc = await asyncio.create_subprocess_exec(
-                *self._status_command, stdout=asyncio.subprocess.PIPE,
-                preexec_fn=ignore_sigs)
-        # ignore first line with version information
-        await self._status_proc.stdout.readline()
-        # ignore second line line with opening bracket
-        await self._status_proc.stdout.readline()
-        # dispatch initial status state
-        status_read = await self._read_status(first=True)
-        while status_read:
-            status_read = await self._read_status()
-        await self._status_proc.wait()
 
     async def _dispatch_events(self):
         print('started dispatching events')
         while True:
             event, payload = await self._conn.wait_event()
             if event in ('shutdown', 'eof',):
-                await self._dispatch_shutdown(payload)
+                await self._dispatch_shutdown(payload or 'eof')
                 self.close()
                 break
             if event is not None:
@@ -410,14 +338,13 @@ class I3Hub(object):
         # start reading events from i3
         futures.append(asyncio.ensure_future(self._dispatch_events()))
         await asyncio.gather(*futures)
+        await self._dispatch_shutdown('close')
         print('stopped')
 
     def close(self):
         if self._closed:
             return
         print('stopping')
-        if self._status_proc:
-            self._status_proc.terminate()
         if self._i3bar_reader:
             self._i3bar_reader.feed_eof()
         self._conn.close()
@@ -529,12 +456,7 @@ async def i3hub_main(loop, args):
     plugins = list(discover_plugins(args.config_dirs.split(':')))
     # connect to i3
     conn = await connect(loop=loop)
-    status_command = (
-                shlex.split(args.status_command) if args.status_command
-                else None)
-    hub = I3Hub(loop, conn, i3bar_reader, i3bar_writer, plugins,
-            status_command, args.status_command_stop_signal,
-            args.status_command_cont_signal)
+    hub = I3Hub(loop, conn, i3bar_reader, i3bar_writer, plugins)
     setup_signals(loop, hub)
     await hub.run()
 
@@ -544,20 +466,12 @@ def parse_args():
     parser.add_argument('--config-dirs', default=':'.join(
         '{}/i3hub'.format(d) for d in XDG_CONFIG_DIRS))
     parser.add_argument('--run-as-status', default=False, action='store_true')
-    parser.add_argument('--status-command', default=None)
-    parser.add_argument('--status-command-stop-signal', default=None,
-            action=ParseSignal)
-    parser.add_argument('--status-command-cont-signal', default=None,
-            action=ParseSignal)
     parser.add_argument('--log-file', default=None)
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    if args.status_command:
-        # imply --run-as-status
-        args.run_as_status = True
     loop = asyncio.get_event_loop()
     loop.run_until_complete(i3hub_main(loop, args))
     loop.close()
