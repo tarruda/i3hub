@@ -41,7 +41,7 @@ class I3(object):
                 await stream_pipe(loop))
         self.barmock = I3BarMock(loop, breader, bwriter)
         self.hub = I3Hub(loop, self.conn, hreader, hwriter, self._plugins,
-                status_command=None, status_output_sort_keys=True)
+                status_output_sort_keys=True)
         tasks = [self.barmock.run(), self.mock.run()]
         if self._run_i3hub:
             # tell I3Mock to expect and reply to a subscribe request from I3Hub

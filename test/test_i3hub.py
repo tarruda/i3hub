@@ -38,7 +38,7 @@ async def test_shutdown_event_closes_i3hub(i3api, i3mock, i3hub, i3events):
 async def test_shutdown_through_closed_connection(i3api, i3mock, i3events):
     i3mock.close()
     await spin()
-    assert i3events[1] == (i3api, 'i3::shutdown', None)
+    assert i3events[1] == (i3api, 'i3::shutdown', 'eof')
 
 
 async def test_i3bar_initial_data(i3barmock):
