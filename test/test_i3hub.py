@@ -6,8 +6,25 @@ from .util import i3event, spin
 pytestmark = pytest.mark.asyncio
 run_i3hub = True
 
+
+async def test_module_init_event(i3api, moduleevents):
+    assert moduleevents == [(i3api, 'i3hub::init', None)]
+
+
 async def test_init_event(i3api, i3events):
     assert i3events == [(i3api, 'i3hub::init', None)]
+
+
+async def test_module_i3_events(i3api, i3mock, moduleevents):
+    i3mock.send_event(i3event(3, '[1]'))
+    await spin()
+    i3mock.send_event(i3event(3, '[2]'))
+    await spin()
+    i3mock.send_event(i3event(3, '[3]'))
+    await spin()
+    assert moduleevents[1] == (i3api, 'i3::window', [1])
+    assert moduleevents[2] == (i3api, 'i3::window', [2])
+    assert moduleevents[3] == (i3api, 'i3::window', [3])
 
 
 async def test_i3_events(i3api, i3mock, i3events):

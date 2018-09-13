@@ -182,6 +182,10 @@ class I3ApiWrapper(object, metaclass=I3ApiWrapperMeta):
         self._update_status_cb = update_status_cb
         self._emit_event_cb = emit_event_cb
 
+    @property
+    def event_loop(self):
+        return self._conn._loop
+
     def get_status(self):
         return self._get_status_cb()
 
@@ -221,11 +225,14 @@ class I3Hub(object):
         self._event_handlers[event].append(handler)
 
     async def _setup_events(self):
-        def is_event_handler(obj):
-            return hasattr(obj, '_i3hub_listen_to')
+        def is_class_plugin(obj):
+            return getattr(obj, '_i3hub_class_plugin', False)
 
-        subscribed_i3_events = set()
-        for plugin in self._plugins:
+        def is_event_handler(obj):
+            return callable(obj) and hasattr(obj, '_i3hub_listen_to')
+
+        def discover_event_handlers(plugin, subscribed_i3_events):
+            module_plugin = plugin.__class__.__name__ == 'module'
             for _, handler in inspect.getmembers(plugin, is_event_handler):
                 for event in handler._i3hub_listen_to:
                     event.split('::', maxsplit=1)
@@ -233,12 +240,26 @@ class I3Hub(object):
                     if ns == 'i3':
                         subscribed_i3_events.add(ev)
                     self._add_event_handler(event, handler)
+            if not module_plugin:
+                # no searching for class plugin inside class plugins
+                return
+            for _, cls in inspect.getmembers(plugin, is_class_plugin):
+                plugin_instance = cls(self._i3api)
+                discover_event_handlers(plugin_instance, subscribed_i3_events)
+
+        subscribed_i3_events = set()
+        for plugin in self._plugins:
+            discover_event_handlers(plugin, subscribed_i3_events)
         # subscribe the connection to all i3 events listened by plugins
         await self._conn.subscribe(list(subscribed_i3_events))
 
     async def _dispatch_event(self, event, arg):
         for handler in self._event_handlers.get(event, []):
-            await handler(self._i3api, event, arg)
+            if inspect.ismethod(handler) and hasattr(handler.__self__,
+                    '_i3hub_class_plugin'):
+                await handler(event, arg)
+            else:
+                await handler(self._i3api, event, arg)
 
     async def dispatch_stop(self):
         return await self._dispatch_event('i3hub::status_stop', None) 
@@ -302,8 +323,8 @@ class I3Hub(object):
         self._i3bar_writer.write('\n[\n'.encode('utf-8'))
         status_ready.set_result(None)
 
-    async def _dispatch_events(self):
-        print('started dispatching events')
+    async def _dispatch_i3_events(self):
+        print('started dispatching i3 events')
         while True:
             event, payload = await self._conn.wait_event()
             if event in ('shutdown', 'eof',):
@@ -336,7 +357,7 @@ class I3Hub(object):
         # dispatch the init event before reading events from i3
         await self._dispatch_event('i3hub::init', None)
         # start reading events from i3
-        futures.append(asyncio.ensure_future(self._dispatch_events()))
+        futures.append(asyncio.ensure_future(self._dispatch_i3_events()))
         await asyncio.gather(*futures)
         await self._dispatch_shutdown('close')
         print('stopped')
@@ -349,6 +370,13 @@ class I3Hub(object):
             self._i3bar_reader.feed_eof()
         self._conn.close()
         self._closed = True
+
+
+def plugin(cls):
+    if not (inspect.isclass(cls) and cls.__name__ != 'module'):
+        raise Exception('The @plugin decorator is for classes only')
+    cls._i3hub_class_plugin = True
+    return cls
 
 
 def listen(event):

@@ -1,9 +1,10 @@
 import asyncio
+import inspect
 
 import pytest
 
 from .mock import I3Mock, I3BarMock
-from .plugin import I3Events, StatusEvents, PluginEvents
+from . import plugin
 from .util import spin, stream_pipe, i3msg
 from ..i3hub import I3Connection, I3Hub
 
@@ -69,30 +70,9 @@ class I3(object):
 
 
 @pytest.fixture
-def i3events():
-    return []
-
-
-@pytest.fixture
-def statusevents():
-    return []
-
-
-@pytest.fixture
-def pluginevents():
-    return []
-
-
-@pytest.fixture
-def plugins(i3events, statusevents, pluginevents):
-    return [I3Events(i3events), StatusEvents(statusevents),
-            PluginEvents(pluginevents)]
-
-
-@pytest.fixture
-def i3(request, event_loop, plugins):
+def i3(request, event_loop):
     run_i3hub = getattr(request.module, 'run_i3hub', False)
-    i3 = I3(plugins, run_i3hub)
+    i3 = I3([plugin, plugin.ModulePlugin()], run_i3hub)
     event_loop.run_until_complete(i3.setup(event_loop))
     yield i3
     event_loop.run_until_complete(i3.teardown(event_loop))
@@ -121,3 +101,31 @@ def i3hub(i3):
 @pytest.fixture
 def i3api(i3hub):
     return i3hub._i3api
+
+
+def search_plugin_instance_events(i3hub, name):
+    for handlers in i3hub._event_handlers.values():
+        for handler in handlers:
+            if (inspect.ismethod(handler) and
+                    handler.__self__.__class__.__name__ == name):
+                return handler.__self__._events
+
+    
+@pytest.fixture
+def i3events(i3hub):
+    return search_plugin_instance_events(i3hub, 'I3Events')
+
+
+@pytest.fixture
+def statusevents(i3hub):
+    return search_plugin_instance_events(i3hub, 'StatusEvents')
+
+
+@pytest.fixture
+def pluginevents(i3hub):
+    return search_plugin_instance_events(i3hub, 'PluginEvents')
+
+
+@pytest.fixture
+def moduleevents(i3hub):
+    return i3hub._plugins[1]._events
