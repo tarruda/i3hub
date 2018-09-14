@@ -4,7 +4,7 @@ import argparse
 import asyncio
 import collections
 import json
-import importlib
+import importlib.util
 import inspect
 import os
 import pkgutil
@@ -15,8 +15,9 @@ import sys
 
 
 from xdg.BaseDirectory import (
-        xdg_config_dirs as XDG_CONFIG_DIRS,
-        get_runtime_dir as xdg_runtime_dir)
+        load_data_paths,
+        load_config_paths,
+        get_runtime_dir)
 
 
 JSON_SEPS = (',', ':')
@@ -216,6 +217,7 @@ class I3Hub(object):
         return self._i3bar_writer is not None
 
     def _add_event_handler(self, event, handler):
+        # print(handler.__module__)
         print('subscribing {handler} ({module}) to event "{event}"'.format(
             handler=handler,
             module=sys.modules[handler.__module__].__file__,
@@ -413,20 +415,39 @@ def get_socket_path():
     return subprocess.check_output(['i3', '--get-socketpath']).decode().strip()
 
 
-def discover_plugins(config_dirs):
-    loaded = set()
-    for config_dir in config_dirs:
-        plugins_dir = '{}/plugins'.format(config_dir)
-        if not os.path.exists('{}/__init__.py'.format(plugins_dir)):
+def load_plugins(paths, plugins):
+    candidates = []
+    for plugin in plugins:
+        l = len(candidates)
+        if '/' in plugin:
+            if os.path.exists(plugin):
+                candidates.append(plugin)
+        else:
+            for path in paths:
+                for ext in ['.py', '']:
+                    p = os.path.join(path, plugin) + ext
+                    if os.path.exists(p):
+                        candidates.append(p)
+        if len(candidates) == l:
+            print('warning: plugin "{}" was not found'.format(plugin))
+    for candidate in candidates:
+        is_module = candidate.endswith('.py')
+        spec_name = 'i3hub.plugins.{}'.format(os.path.basename(candidate))
+        if is_module:
+            spec_name = spec_name[:-3]
+            module_path = candidate
+        else:
+            module_path = os.path.join(candidate, '__init__.py')
+        if spec_name in sys.modules:
+            print('"{}" already loaded, skipping "{}"'.format(spec_name,
+                candidate))
             continue
-        sys.path.insert(0, config_dir)
-        importlib.import_module('plugins')
-        for _, name, _ in pkgutil.iter_modules(path=[plugins_dir]):
-            print('loading {} from {}'.format(name, plugins_dir)) 
-            name = '.{}'.format(name)
-            if name not in loaded:
-                loaded.add(name)
-                yield importlib.import_module(name, package='plugins')
+        print('loading "{}" from "{}"'.format(spec_name, candidate))
+        spec = importlib.util.spec_from_file_location(spec_name, module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules[spec_name] = module
+        yield module
 
 
 async def setup_i3bar_streams(loop):
@@ -478,10 +499,10 @@ async def i3hub_main(loop, args):
             # even if a log file is not specified, always use one when running
             # as i3bar status since stdout is already used for writing status
             # updates.
-            args.log_file = '{}/i3hub.log'.format(xdg_runtime_dir())
+            args.log_file = '{}/i3hub.log'.format(get_runtime_dir())
         setup_logging(loop, args.log_file)
     # load plugins
-    plugins = list(discover_plugins(args.config_dirs.split(':')))
+    plugins = list(load_plugins(args.plugin_path.split(':'), args.load))
     # connect to i3
     conn = await connect(loop=loop)
     hub = I3Hub(loop, conn, i3bar_reader, i3bar_writer, plugins)
@@ -491,8 +512,12 @@ async def i3hub_main(loop, args):
 
 def parse_args():
     parser = argparse.ArgumentParser('i3hub')
-    parser.add_argument('--config-dirs', default=':'.join(
-        '{}/i3hub'.format(d) for d in XDG_CONFIG_DIRS))
+    parser.add_argument('--load', action='append', default=[])
+    default_data_dirs = list(
+            list(load_config_paths('i3hub')) + list(load_data_paths('i3hub')))
+    default_plugin_path = ':'.join('{}/plugins'.format(p) for p in
+            default_data_dirs)
+    parser.add_argument('--plugin-path', default=default_plugin_path)
     parser.add_argument('--run-as-status', default=False, action='store_true')
     parser.add_argument('--log-file', default=None)
     return parser.parse_args()
