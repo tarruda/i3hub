@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import collections
+import configparser
 import json
 import importlib.util
 import inspect
@@ -15,6 +16,7 @@ import sys
 
 
 from xdg.BaseDirectory import (
+        xdg_config_home,
         load_data_paths,
         load_config_paths,
         get_runtime_dir)
@@ -199,12 +201,13 @@ class I3ApiWrapper(object, metaclass=I3ApiWrapperMeta):
 
 class I3Hub(object):
     def __init__(self, loop, conn, i3bar_reader, i3bar_writer,
-            plugins, status_output_sort_keys=False):
+            plugins, config, status_output_sort_keys=False):
         self._loop = loop
         self._conn = conn
         self._i3bar_reader = i3bar_reader
         self._i3bar_writer = i3bar_writer
         self._plugins = plugins
+        self._config = config
         self._status_output_sort_keys = status_output_sort_keys
         self._current_status_data = []
         self._first_status_update = True
@@ -450,6 +453,18 @@ def load_plugins(paths, plugins):
         yield module
 
 
+def load_config(config_path):
+    config = configparser.ConfigParser(
+            interpolation=configparser.ExtendedInterpolation())
+    if os.path.exists(config_path):
+        config.read(config_path)
+    if 'i3hub' not in config:
+        config['i3hub'] = {}
+    if 'DEFAULT' not in config:
+        config['DEFAULT'] = {}
+    return config
+
+
 async def setup_i3bar_streams(loop):
     # dup stdout fd and use to write i3bar updates, since it is possible that
     # stdout original fd will be closed for logging
@@ -501,11 +516,18 @@ async def i3hub_main(loop, args):
             # updates.
             args.log_file = '{}/i3hub.log'.format(get_runtime_dir())
         setup_logging(loop, args.log_file)
+    # load config
+    config = load_config(args.config)
+    try:
+        config_load = json.loads(config['i3hub'].get('plugins', '[]'))
+    except JSONDecodeError:
+        config_load = []
     # load plugins
-    plugins = list(load_plugins(args.plugin_path.split(':'), args.load))
+    plugins = list(load_plugins(args.plugin_path.split(':'), args.load +
+        config_load))
     # connect to i3
     conn = await connect(loop=loop)
-    hub = I3Hub(loop, conn, i3bar_reader, i3bar_writer, plugins)
+    hub = I3Hub(loop, conn, i3bar_reader, i3bar_writer, plugins, config)
     setup_signals(loop, hub)
     await hub.run()
 
@@ -518,6 +540,12 @@ def parse_args():
     default_plugin_path = ':'.join('{}/plugins'.format(p) for p in
             default_data_dirs)
     parser.add_argument('--plugin-path', default=default_plugin_path)
+    config_candidates = list(c for c in
+            (os.path.join(p, 'i3hub.cfg') for p in default_data_dirs)
+            if os.path.exists(c))
+    if not config_candidates:
+        config_candidates.append('{}/i3hub/i3hub.cfg'.format(xdg_config_home))
+    parser.add_argument('-c', '--config', default=config_candidates[0])
     parser.add_argument('--run-as-status', default=False, action='store_true')
     parser.add_argument('--log-file', default=None)
     return parser.parse_args()
