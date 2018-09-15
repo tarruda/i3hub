@@ -8,11 +8,11 @@ run_i3hub = True
 
 
 async def test_module_init_event(i3api, moduleevents):
-    assert moduleevents == [(i3api, 'i3hub::init', None)]
+    assert moduleevents == [(i3api, 'i3hub::init', {})]
 
 
 async def test_init_event(i3api, i3events):
-    assert i3events == [(i3api, 'i3hub::init', None)]
+    assert i3events == [(i3api, 'i3hub::init', {})]
 
 
 async def test_module_i3_events(i3api, i3mock, moduleevents):

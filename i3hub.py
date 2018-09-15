@@ -62,6 +62,16 @@ HUB_EVENTS = (
 )
 
 
+class JSONInterpolation(configparser.ExtendedInterpolation):
+    def before_get(self, parser, section, option, value, defaults):
+        interpolated = super().before_get(parser, section, option, value,
+                defaults)
+        try:
+            return json.loads(interpolated)
+        except json.JSONDecodeError:
+            return interpolated
+
+
 class I3ConnectionMeta(type):
     def __new__(cls, clsname, superclasses, attrs):
         def gen_method(msg_type, handler):
@@ -258,13 +268,26 @@ class I3Hub(object):
         # subscribe the connection to all i3 events listened by plugins
         await self._conn.subscribe(list(subscribed_i3_events))
 
+    async def _invoke_event_handler(self, handler, event, arg):
+        if inspect.ismethod(handler) and hasattr(handler.__self__,
+                '_i3hub_class_plugin'):
+            await handler(event, arg)
+        else:
+            await handler(self._i3api, event, arg)
+
     async def _dispatch_event(self, event, arg):
         for handler in self._event_handlers.get(event, []):
-            if inspect.ismethod(handler) and hasattr(handler.__self__,
-                    '_i3hub_class_plugin'):
-                await handler(event, arg)
-            else:
-                await handler(self._i3api, event, arg)
+            await self._invoke_event_handler(handler, event, arg)
+
+    async def _dispatch_init_event(self):
+        event = 'i3hub::init'
+        for handler in self._event_handlers.get(event, []):
+            module_name = handler.__module__
+            section_name = module_name.split('.')[2]
+            if section_name not in self._config:
+                self._config[section_name] = {}
+            await self._invoke_event_handler(handler, event,
+                    self._config[section_name])
 
     async def dispatch_stop(self):
         return await self._dispatch_event('i3hub::status_stop', None) 
@@ -360,7 +383,7 @@ class I3Hub(object):
                 status_ready)))
             await status_ready
         # dispatch the init event before reading events from i3
-        await self._dispatch_event('i3hub::init', None)
+        await self._dispatch_init_event()
         # start reading events from i3
         futures.append(asyncio.ensure_future(self._dispatch_i3_events()))
         await asyncio.gather(*futures)
@@ -454,14 +477,11 @@ def load_plugins(paths, plugins):
 
 
 def load_config(config_path):
-    config = configparser.ConfigParser(
-            interpolation=configparser.ExtendedInterpolation())
+    config = configparser.ConfigParser(interpolation=JSONInterpolation())
     if os.path.exists(config_path):
         config.read(config_path)
     if 'i3hub' not in config:
         config['i3hub'] = {}
-    if 'DEFAULT' not in config:
-        config['DEFAULT'] = {}
     return config
 
 
@@ -518,10 +538,7 @@ async def i3hub_main(loop, args):
         setup_logging(loop, args.log_file)
     # load config
     config = load_config(args.config)
-    try:
-        config_load = json.loads(config['i3hub'].get('plugins', '[]'))
-    except JSONDecodeError:
-        config_load = []
+    config_load = config['i3hub'].get('plugins') or []
     # load plugins
     plugins = list(load_plugins(args.plugin_path.split(':'), args.load +
         config_load))
