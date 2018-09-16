@@ -80,7 +80,7 @@ async def test_get_and_update_status(i3barmock, i3api):
     i3barmock.verify()
     # NOTE: the assumption that current_status is still the same object
     # returned by the last get_status call is not valid when wrapping another
-    # status command. To be safe, plugins should always calls `get_status`
+    # status command. To be safe, extensions should always calls `get_status`
     # before updating
     current_status.append(2)
     i3api.update_status()
@@ -116,9 +116,10 @@ async def test_i3bar_stop_cont_events(i3hub, i3api, statusevents):
     assert statusevents[1] == (i3api, 'i3hub::status_cont', None)
 
 
-async def test_plugin_event(i3api, pluginevents):
-    assert pluginevents == []
+async def test_extension_event(i3api, extensionevents):
+    assert extensionevents == []
     arg = []
-    await i3api.emit_event('some_plugin::custom', arg)
-    assert pluginevents[0] == (i3api, 'plugin::some_plugin::custom', arg)
-    assert arg == ['plugin-data']
+    await i3api.emit_event('some_extension::custom', arg)
+    assert extensionevents[0] == (i3api, 'extension::some_extension::custom',
+            arg)
+    assert arg == ['extension-data']

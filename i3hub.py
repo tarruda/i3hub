@@ -206,17 +206,17 @@ class I3ApiWrapper(object, metaclass=I3ApiWrapperMeta):
         return self._update_status_cb()
 
     async def emit_event(self, event, arg):
-        await self._emit_event_cb('plugin::' + event, arg)
+        await self._emit_event_cb('extension::' + event, arg)
 
 
 class I3Hub(object):
     def __init__(self, loop, conn, i3bar_reader, i3bar_writer,
-            plugins, config, status_output_sort_keys=False):
+            extensions, config, status_output_sort_keys=False):
         self._loop = loop
         self._conn = conn
         self._i3bar_reader = i3bar_reader
         self._i3bar_writer = i3bar_writer
-        self._plugins = plugins
+        self._extensions = extensions
         self._config = config
         self._status_output_sort_keys = status_output_sort_keys
         self._current_status_data = []
@@ -240,37 +240,38 @@ class I3Hub(object):
         self._event_handlers[event].append(handler)
 
     async def _setup_events(self):
-        def is_class_plugin(obj):
-            return getattr(obj, '_i3hub_class_plugin', False)
+        def is_class_extension(obj):
+            return getattr(obj, '_i3hub_class_extension', False)
 
         def is_event_handler(obj):
             return callable(obj) and hasattr(obj, '_i3hub_listen_to')
 
-        def discover_event_handlers(plugin, subscribed_i3_events):
-            module_plugin = plugin.__class__.__name__ == 'module'
-            for _, handler in inspect.getmembers(plugin, is_event_handler):
+        def discover_event_handlers(extension, subscribed_i3_events):
+            module_extension = extension.__class__.__name__ == 'module'
+            for _, handler in inspect.getmembers(extension, is_event_handler):
                 for event in handler._i3hub_listen_to:
                     event.split('::', maxsplit=1)
                     ns, ev = event.split('::', maxsplit=1)
                     if ns == 'i3':
                         subscribed_i3_events.add(ev)
                     self._add_event_handler(event, handler)
-            if not module_plugin:
-                # no searching for class plugin inside class plugins
+            if not module_extension:
+                # no searching for class extension inside class extensions
                 return
-            for _, cls in inspect.getmembers(plugin, is_class_plugin):
-                plugin_instance = cls(self._i3api)
-                discover_event_handlers(plugin_instance, subscribed_i3_events)
+            for _, cls in inspect.getmembers(extension, is_class_extension):
+                extension_instance = cls(self._i3api)
+                discover_event_handlers(extension_instance,
+                        subscribed_i3_events)
 
         subscribed_i3_events = set()
-        for plugin in self._plugins:
-            discover_event_handlers(plugin, subscribed_i3_events)
-        # subscribe the connection to all i3 events listened by plugins
+        for extension in self._extensions:
+            discover_event_handlers(extension, subscribed_i3_events)
+        # subscribe the connection to all i3 events listened by extensions
         await self._conn.subscribe(list(subscribed_i3_events))
 
     async def _invoke_event_handler(self, handler, event, arg):
         if inspect.ismethod(handler) and hasattr(handler.__self__,
-                '_i3hub_class_plugin'):
+                '_i3hub_class_extension'):
             await handler(event, arg)
         else:
             await handler(self._i3api, event, arg)
@@ -375,7 +376,7 @@ class I3Hub(object):
         futures = []
         if self.run_as_status:
             # use a future to get notified when the _run_status task has
-            # written the opening bracket. This ensures plugins can't send a
+            # written the opening bracket. This ensures extensions can't send a
             # status update in the init event before the opening bracket is
             # sent, which could result in a parse failure by i3bar
             status_ready = asyncio.Future(loop=self._loop)
@@ -400,10 +401,10 @@ class I3Hub(object):
         self._closed = True
 
 
-def plugin(cls):
+def extension(cls):
     if not (inspect.isclass(cls) and cls.__name__ != 'module'):
-        raise Exception('The @plugin decorator is for classes only')
-    cls._i3hub_class_plugin = True
+        raise Exception('The @extension decorator is for classes only')
+    cls._i3hub_class_extension = True
     return cls
 
 
@@ -412,7 +413,7 @@ def listen(event):
     if len(split) != 2:
         raise Exception('"{}" is not a valid event name'.format(event))
     ns, ev = split
-    if ns not in ['i3', 'i3hub', 'plugin']:
+    if ns not in ['i3', 'i3hub', 'extension']:
         raise Exception('Invalid event namespace "{}"'.format(ns))
     if ns == 'i3' and ev not in I3_EVENTS:
         raise Exception('Invalid i3 event "{}"'.format(ev))
@@ -441,24 +442,24 @@ def get_socket_path():
     return subprocess.check_output(['i3', '--get-socketpath']).decode().strip()
 
 
-def load_plugins(paths, plugins):
+def load_extensions(paths, extensions):
     candidates = []
-    for plugin in plugins:
+    for extension in extensions:
         l = len(candidates)
-        if '/' in plugin:
-            if os.path.exists(plugin):
-                candidates.append(plugin)
+        if '/' in extension:
+            if os.path.exists(extension):
+                candidates.append(extension)
         else:
             for path in paths:
                 for ext in ['.py', '']:
-                    p = os.path.join(path, plugin) + ext
+                    p = os.path.join(path, extension) + ext
                     if os.path.exists(p):
                         candidates.append(p)
         if len(candidates) == l:
-            print('warning: plugin "{}" was not found'.format(plugin))
+            print('warning: extension "{}" was not found'.format(extension))
     for candidate in candidates:
         is_module = candidate.endswith('.py')
-        spec_name = 'i3hub.plugins.{}'.format(os.path.basename(candidate))
+        spec_name = 'i3hub.extensions.{}'.format(os.path.basename(candidate))
         if is_module:
             spec_name = spec_name[:-3]
             module_path = candidate
@@ -504,7 +505,7 @@ async def setup_i3bar_streams(loop):
 def setup_logging(loop, log_file):
     log = open(log_file, 'w', 1)
     # We dup the log file fd to fds 1 and 2. This will redirect
-    # stdout/stderr output from both i3hub plugins and child processes
+    # stdout/stderr output from both i3hub extensions and child processes
     # to the log file
     os.dup2(log.fileno(), sys.stdout.fileno())
     os.dup2(log.fileno(), sys.stderr.fileno())
@@ -538,13 +539,13 @@ async def i3hub_main(loop, args):
         setup_logging(loop, args.log_file)
     # load config
     config = load_config(args.config)
-    config_load = config['i3hub'].get('plugins') or []
-    # load plugins
-    plugins = list(load_plugins(args.plugin_path.split(':'), args.load +
-        config_load))
+    config_load = config['i3hub'].get('extensions') or []
+    # load extensions
+    extensions = list(load_extensions(args.extension_path.split(':'),
+        args.load + config_load))
     # connect to i3
     conn = await connect(loop=loop)
-    hub = I3Hub(loop, conn, i3bar_reader, i3bar_writer, plugins, config)
+    hub = I3Hub(loop, conn, i3bar_reader, i3bar_writer, extensions, config)
     setup_signals(loop, hub)
     await hub.run()
 
@@ -554,9 +555,9 @@ def parse_args():
     parser.add_argument('--load', action='append', default=[])
     default_data_dirs = list(
             list(load_config_paths('i3hub')) + list(load_data_paths('i3hub')))
-    default_plugin_path = ':'.join('{}/plugins'.format(p) for p in
+    default_extension_path = ':'.join('{}/extensions'.format(p) for p in
             default_data_dirs)
-    parser.add_argument('--plugin-path', default=default_plugin_path)
+    parser.add_argument('--extension-path', default=default_extension_path)
     config_candidates = list(c for c in
             (os.path.join(p, 'i3hub.cfg') for p in default_data_dirs)
             if os.path.exists(c))

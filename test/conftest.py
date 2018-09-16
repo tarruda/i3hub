@@ -4,13 +4,13 @@ import inspect
 import pytest
 
 from .mock import I3Mock, I3BarMock
-from . import plugin
+from . import extension
 from .util import spin, stream_pipe, i3msg
 from ..i3hub import I3Connection, I3Hub
 
 
 class I3(object):
-    def __init__(self, plugins, run_i3hub):
+    def __init__(self, extensions, run_i3hub):
         self.mock = None
         self.conn = None
         self.barmock = None
@@ -24,7 +24,7 @@ class I3(object):
         self._hreader_fobj = None
         self._hwriter_fobj = None
         self._all_run_task = None
-        self._plugins = plugins
+        self._extensions = extensions
         self._run_i3hub = run_i3hub
 
     async def setup(self, loop):
@@ -41,7 +41,7 @@ class I3(object):
         hreader, self._hreader_fobj, bwriter, self._bwriter_fobj = (
                 await stream_pipe(loop))
         self.barmock = I3BarMock(loop, breader, bwriter)
-        self.hub = I3Hub(loop, self.conn, hreader, hwriter, self._plugins,
+        self.hub = I3Hub(loop, self.conn, hreader, hwriter, self._extensions,
                 config={}, status_output_sort_keys=True)
         tasks = [self.barmock.run(), self.mock.run()]
         if self._run_i3hub:
@@ -72,7 +72,7 @@ class I3(object):
 @pytest.fixture
 def i3(request, event_loop):
     run_i3hub = getattr(request.module, 'run_i3hub', False)
-    i3 = I3([plugin, plugin.ModulePlugin()], run_i3hub)
+    i3 = I3([extension, extension.ModuleExtension()], run_i3hub)
     event_loop.run_until_complete(i3.setup(event_loop))
     yield i3
     event_loop.run_until_complete(i3.teardown(event_loop))
@@ -103,7 +103,7 @@ def i3api(i3hub):
     return i3hub._i3api
 
 
-def search_plugin_instance_events(i3hub, name):
+def search_extension_instance_events(i3hub, name):
     for handlers in i3hub._event_handlers.values():
         for handler in handlers:
             if (inspect.ismethod(handler) and
@@ -113,19 +113,19 @@ def search_plugin_instance_events(i3hub, name):
     
 @pytest.fixture
 def i3events(i3hub):
-    return search_plugin_instance_events(i3hub, 'I3Events')
+    return search_extension_instance_events(i3hub, 'I3Events')
 
 
 @pytest.fixture
 def statusevents(i3hub):
-    return search_plugin_instance_events(i3hub, 'StatusEvents')
+    return search_extension_instance_events(i3hub, 'StatusEvents')
 
 
 @pytest.fixture
-def pluginevents(i3hub):
-    return search_plugin_instance_events(i3hub, 'PluginEvents')
+def extensionevents(i3hub):
+    return search_extension_instance_events(i3hub, 'ExtensionEvents')
 
 
 @pytest.fixture
 def moduleevents(i3hub):
-    return i3hub._plugins[1]._events
+    return i3hub._extensions[1]._events

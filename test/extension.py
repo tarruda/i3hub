@@ -1,7 +1,7 @@
-from ..i3hub import plugin, listen 
+from ..i3hub import extension, listen 
 
 
-class Plugin(object):
+class Extension(object):
     def __init__(self, i3):
         self._i3 = i3
         self._events = []
@@ -10,8 +10,8 @@ class Plugin(object):
         self._events.append((self._i3, event, arg))
 
 
-@plugin
-class I3Events(Plugin):
+@extension
+class I3Events(Extension):
     @listen('i3hub::init')
     @listen('i3::window')
     @listen('i3::shutdown')
@@ -19,8 +19,8 @@ class I3Events(Plugin):
         self._record_event(event, arg)
 
 
-@plugin
-class StatusEvents(Plugin):
+@extension
+class StatusEvents(Extension):
     @listen('i3hub::status_update')
     @listen('i3hub::status_click')
     @listen('i3hub::status_stop')
@@ -34,15 +34,15 @@ class StatusEvents(Plugin):
         self._i3.update_status()
 
 
-@plugin
-class PluginEvents(Plugin):
-    @listen('plugin::some_plugin::custom')
+@extension
+class ExtensionEvents(Extension):
+    @listen('extension::some_extension::custom')
     async def event_handler(self, event, arg):
         self._record_event(event, arg)
-        arg.append('plugin-data')
+        arg.append('extension-data')
 
 
-class ModulePlugin(object):
+class ModuleExtension(object):
     def __init__(self):
         self._events = []
 
