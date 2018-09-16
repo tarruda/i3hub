@@ -9,7 +9,7 @@ REPO    = 'https://github.com/tarruda/i3hub'
 setup(
     name='i3hub',
     version=VERSION,
-    description='i3 python plugin manager',
+    description='i3 extension runtime',
     py_modules=['i3hub'],
     author='Thiago de Arruda',
     author_email='tpadilha84@gmail.com',
