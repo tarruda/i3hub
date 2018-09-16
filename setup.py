@@ -10,6 +10,7 @@ setup(
     name='i3hub',
     version=VERSION,
     description='i3 extension runtime',
+    python_requires='>=3.5',
     py_modules=['i3hub'],
     author='Thiago de Arruda',
     author_email='tpadilha84@gmail.com',
