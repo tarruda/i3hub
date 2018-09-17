@@ -56,10 +56,10 @@ I3_EVENTS = (
 
 HUB_EVENTS = (
     'init',
-    'status_click',
-    'status_update',
-    'status_stop',
-    'status_cont',
+    'i3bar_click',
+    'i3bar_refresh',
+    'i3bar_suspend',
+    'i3bar_resume',
 )
 
 
@@ -189,22 +189,18 @@ class I3ApiWrapperMeta(type):
 
 
 class I3ApiWrapper(object, metaclass=I3ApiWrapperMeta):
-    def __init__(self, conn, get_status_cb, update_status_cb, emit_event_cb):
+    def __init__(self, conn, refresh_i3bar_cb, emit_event_cb):
         self._conn = conn
         self._shutting_down = False
-        self._get_status_cb = get_status_cb
-        self._update_status_cb = update_status_cb
+        self._refresh_i3bar_cb = refresh_i3bar_cb
         self._emit_event_cb = emit_event_cb
 
     @property
     def event_loop(self):
         return self._conn._loop
 
-    def get_status(self):
-        return self._get_status_cb()
-
-    def update_status(self):
-        return self._update_status_cb()
+    def refresh_i3bar(self):
+        return self._refresh_i3bar_cb()
 
     async def emit_event(self, event, arg):
         await self._emit_event_cb('extension::' + event, arg)
@@ -220,7 +216,6 @@ class I3Hub(object):
         self._extensions = extensions
         self._config = config
         self._status_output_sort_keys = status_output_sort_keys
-        self._current_status_data = []
         self._first_status_update = True
         self._i3api = None
         self._event_handlers = {}
@@ -292,20 +287,20 @@ class I3Hub(object):
                     self._config[section_name])
 
     async def dispatch_stop(self):
-        return await self._dispatch_event('i3hub::status_stop', None) 
+        return await self._dispatch_event('i3hub::i3bar_suspend', None) 
 
     async def dispatch_cont(self):
-        return await self._dispatch_event('i3hub::status_cont', None) 
+        return await self._dispatch_event('i3hub::i3bar_resume', None) 
 
     async def _output_updated_status(self):
         if self._first_status_update:
             self._first_status_update = False
         else:
             self._i3bar_writer.write(','.encode('utf-8'))
-        status_data = self._current_status_data
-        await self._dispatch_event('i3hub::status_update', status_data)
+        status_array = []
+        await self._dispatch_event('i3hub::i3bar_refresh', status_array)
         self._i3bar_writer.write(
-                json.dumps(status_data, separators=JSON_SEPS,
+                json.dumps(status_array, separators=JSON_SEPS,
                     sort_keys=self._status_output_sort_keys).encode('utf-8'))
         self._i3bar_writer.write('\n'.encode('utf-8'))
 
@@ -336,7 +331,7 @@ class I3Hub(object):
             except json.JSONDecodeError:
                 print('failed to parse click event: {}'.format(line))
                 continue
-            await self._dispatch_event('i3hub::status_click',
+            await self._dispatch_event('i3hub::i3bar_click',
                     click_event_payload)
 
     async def _run_status(self, status_ready):
@@ -371,8 +366,7 @@ class I3Hub(object):
             raise Exception('This I3Hub instance was already closed')
         print('starting')
         self._i3api = I3ApiWrapper(self._conn,
-                get_status_cb=lambda: self._current_status_data,
-                update_status_cb=lambda: self._loop.create_task(
+                refresh_i3bar_cb=lambda: self._loop.create_task(
                     self._output_updated_status()),
                 emit_event_cb=self._dispatch_event)
         await self._setup_events()
@@ -439,6 +433,17 @@ async def connect(socket_path=None, loop=None):
         loop = asyncio.get_event_loop()
     reader, writer = await asyncio.open_unix_connection(socket_path, loop=loop)
     return I3Connection(loop, reader, writer)
+
+
+def status_array_merge(status_array, item):
+    updated = False
+    for obj in status_array:
+        if obj['name'] == item['name']:
+            obj.update(item)
+            updated = True
+            break
+    if not updated:
+        status_array.insert(0, item)
 
 
 def get_socket_path():

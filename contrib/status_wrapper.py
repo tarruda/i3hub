@@ -19,17 +19,11 @@ class Status(object):
         self._loop = i3.event_loop
         self._command = None
         self._proc = None
-        self._supports_click = None
+        self._status_supports_click = None
+        self._status_array = []
         self._stop_sig = None
         self._cont_sig = None
         self._updating = False
-
-    async def _dispatch_update(self, line):
-        status = self._i3.get_status()
-        status.clear()
-        status_data = json.loads(line)
-        status.extend(status_data)
-        self._i3.update_status()
 
     async def _read_status(self):
         line = await self._proc.stdout.readline()
@@ -38,24 +32,29 @@ class Status(object):
         line = line.decode('utf-8', 'replace').strip()
         if line[0] == ',':
             line = line[1:]
-        await self._dispatch_update(line)
+        self._status_array = json.loads(line)
+        self._i3.refresh_i3bar()
         return True
 
-    @listen('i3hub::status_stop')
-    async def dispatch_stop(self, event, arg):
+    @listen('i3hub::i3bar_refresh')
+    async def on_i3bar_refresh(self, event, status_array):
+        status_array.extend(self._status_array)
+
+    @listen('i3hub::i3bar_suspend')
+    async def on_i3bar_suspend(self, event, arg):
         self._proc.send_signal(self._stop_sig)
 
-    @listen('i3hub::status_cont')
-    async def dispatch_cont(self, event, arg):
+    @listen('i3hub::i3bar_resume')
+    async def on_i3bar_resume(self, event, arg):
         self._proc.send_signal(self._cont_sig)
 
-    @listen('i3hub::status_click')
-    async def dispatch_click(self, event, arg):
+    @listen('i3hub::i3bar_click')
+    async def on_i3bar_click(self, event, arg):
         click_payload = [arg]
-        if self._supports_click:
-            # Only need to emit this event if the underlying status bar
-            # supports clicks
-            await self._i3.emit_event('status_wrapper::intercept_click',
+        if self._status_supports_click:
+            # Only need to emit this event if the underlying status command
+            # supports click events
+            await self._i3.emit_event('status_wrapper::intercept_i3bar_click',
                     click_payload)
             if click_payload:
                 # if no extension deleted the payload, forward the click
@@ -80,7 +79,7 @@ class Status(object):
         info = json.loads((await self._proc.stdout.readline()).decode(
                 'utf-8', 'replace').strip())
         # detect if the underlying status command supports click events
-        self._supports_click = info.get('click_events', False)
+        self._status_supports_click = info.get('click_events', False)
         # detect the stop/cont signals
         self._stop_sig = info.get('stop_signal', signal.SIGSTOP)
         self._cont_sig = info.get('cont_signal', signal.SIGCONT)
