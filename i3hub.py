@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import collections
 import configparser
+import glob
 import json
 import importlib.util
 import inspect
@@ -477,10 +478,13 @@ def load_extensions(paths, extensions):
         yield module
 
 
-def load_config(config_path):
+def load_config(config_path, extra_config_dirs):
     config = configparser.ConfigParser(interpolation=JSONInterpolation())
     if os.path.exists(config_path):
         config.read(config_path)
+    for d in extra_config_dirs:
+        for f in glob.iglob('{}/*.cfg'.format(d)):
+            config.read(f)
     if 'i3hub' not in config:
         config['i3hub'] = {}
     return config
@@ -538,7 +542,7 @@ async def i3hub_main(loop, args):
             args.log_file = '{}/i3hub.log'.format(get_runtime_dir())
         setup_logging(loop, args.log_file)
     # load config
-    config = load_config(args.config)
+    config = load_config(args.config, args.extra_config_dirs.split(':'))
     config_load = config['i3hub'].get('extensions') or []
     # load extensions
     extensions = list(load_extensions(args.extension_path.split(':'),
@@ -553,17 +557,21 @@ async def i3hub_main(loop, args):
 def parse_args():
     parser = argparse.ArgumentParser('i3hub')
     parser.add_argument('--load', action='append', default=[])
-    default_data_dirs = list(
+    data_dirs = list(
             list(load_config_paths('i3hub')) + list(load_data_paths('i3hub')))
-    default_extension_path = ':'.join('{}/extensions'.format(p) for p in
-            default_data_dirs)
-    parser.add_argument('--extension-path', default=default_extension_path)
+    extension_path = ':'.join('{}/extensions'.format(p) for p in data_dirs)
+    parser.add_argument('--extension-path', default=extension_path)
     config_candidates = list(c for c in
-            (os.path.join(p, 'i3hub.cfg') for p in default_data_dirs)
+            (os.path.join(p, 'i3hub.cfg') for p in data_dirs)
             if os.path.exists(c))
     if not config_candidates:
         config_candidates.append('{}/i3hub/i3hub.cfg'.format(xdg_config_home))
     parser.add_argument('-c', '--config', default=config_candidates[0])
+    extra_config_dirs = reversed(list(d for d in
+            (os.path.join(p, 'config.d') for p in data_dirs)
+            if os.path.isdir(d)))
+    parser.add_argument('--extra-config-dirs',
+            default=':'.join(extra_config_dirs))
     parser.add_argument('--run-as-status', default=False, action='store_true')
     parser.add_argument('--log-file', default=None)
     return parser.parse_args()
