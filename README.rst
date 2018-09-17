@@ -22,7 +22,7 @@ coroutines. Features:
 Installation
 ------------
 
-.. highlight:: sh
+.. code-block::
 
     pip3 install i3hub
 
@@ -34,7 +34,8 @@ Simply run `i3hub` when i3 starts by adding `exec i3hub` in your i3 config.
 Another (better) option is to run it as an i3bar status command, which
 allows an integrated i3bar + i3 extension experience:
 
-.. highlight:: config
+.. code-block::
+
     bar {
             tray_output "primary"
             status_command "exec i3hub --run-as-status"
@@ -62,7 +63,7 @@ Adapted from i3ipc `app-on-ws-init.py example
 <https://github.com/acrisci/i3ipc-python/blob/master/examples/app-on-ws-init.py>`_,
 this extension opens an application when a specific workspace is entered:
 
-.. highlight::
+.. code-block:: python
 
     from i3hub import listen 
     
@@ -76,7 +77,8 @@ Here's a more flexible version that uses i3hub.cfg to allow an arbitrary list of
 i3 commands to be executed on demand when a workspace is created:
 
 
-.. highlight::
+.. code-block:: python
+
     import asyncio
     
     from i3hub import listen 
@@ -95,7 +97,7 @@ i3 commands to be executed on demand when a workspace is created:
         for cmd in cmds_for_workspace:
             print('executing', cmd)
             await i3.command(cmd)
-            # give some time for i3 to process commands
+            # give some time for windows to be created
             await asyncio.sleep(0.2)
 
 
@@ -103,7 +105,7 @@ Assuming the above script is saved as
 ~/.config/i3hub/extensions/workspace_setup.py, here's an example i3hub.cfg:
 
 
-.. highlight:: config
+.. code-block::
 
     [i3hub]
     # extensions have to be explicitly listed
