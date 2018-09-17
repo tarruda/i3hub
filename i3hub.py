@@ -297,14 +297,15 @@ class I3Hub(object):
     async def dispatch_cont(self):
         return await self._dispatch_event('i3hub::status_cont', None) 
 
-    def _output_updated_status(self):
+    async def _output_updated_status(self):
         if self._first_status_update:
             self._first_status_update = False
         else:
             self._i3bar_writer.write(','.encode('utf-8'))
+        status_data = self._current_status_data
+        await self._dispatch_event('i3hub::status_update', status_data)
         self._i3bar_writer.write(
-                json.dumps(self._current_status_data,
-                    separators=JSON_SEPS,
+                json.dumps(status_data, separators=JSON_SEPS,
                     sort_keys=self._status_output_sort_keys).encode('utf-8'))
         self._i3bar_writer.write('\n'.encode('utf-8'))
 
@@ -371,7 +372,8 @@ class I3Hub(object):
         print('starting')
         self._i3api = I3ApiWrapper(self._conn,
                 get_status_cb=lambda: self._current_status_data,
-                update_status_cb=lambda: self._output_updated_status(),
+                update_status_cb=lambda: self._loop.create_task(
+                    self._output_updated_status()),
                 emit_event_cb=self._dispatch_event)
         await self._setup_events()
         futures = []
