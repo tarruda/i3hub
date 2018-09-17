@@ -52,10 +52,15 @@ class Status(object):
     @listen('i3hub::status_click')
     async def dispatch_click(self, event, arg):
         click_payload = [arg]
-        await self._i3.emit_event('status_wrapper::click', click_payload)
-        if self._supports_click and click_payload:
-            self._proc.stdin.write(json.dumps(click_payload[0]).encode(
-                'utf-8'))
+        if self._supports_click:
+            # Only need to emit this event if the underlying status bar
+            # supports clicks
+            await self._i3.emit_event('status_wrapper::intercept_click',
+                    click_payload)
+            if click_payload:
+                # if no extension deleted the payload, forward the click
+                self._proc.stdin.write(json.dumps(click_payload[0]).encode(
+                    'utf-8'))
 
     @listen('i3::shutdown')
     async def shutdown(self, event, arg):
