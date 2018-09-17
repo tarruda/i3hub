@@ -29,7 +29,6 @@ class Status(object):
         status.clear()
         status_data = json.loads(line)
         status.extend(status_data)
-        await self._i3.emit_event('status_wrapper::update', status)
         self._i3.update_status()
 
     async def _read_status(self):
