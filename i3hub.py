@@ -480,16 +480,32 @@ def load_extensions(paths, extensions):
         yield module
 
 
+def append_remove_extensions(extensions, config):
+    # this function allows to split extensions array definition across various
+    # files, which can be useful when creating distro packages that both
+    # install and load a certain extension automatically.
+    for ext in config['i3hub'].get('extensions_append', []):
+        if ext not in extensions:
+            extensions.append(ext)
+    for ext in config['i3hub'].get('extensions_remove', []):
+        if ext in extensions:
+            extensions.remove(ext)
+    config.remove_option('i3hub', 'extensions_append')
+    config.remove_option('i3hub', 'extensions_remove')
+
+
 def load_config(config_path, extra_config_dirs):
     config = configparser.ConfigParser(interpolation=JSONInterpolation())
+    config['i3hub'] = {}
     if os.path.exists(config_path):
         config.read(config_path)
+        extensions = config['i3hub'].get('extensions', [])
+        append_remove_extensions(extensions, config)
     for d in extra_config_dirs:
         for f in glob.iglob('{}/*.cfg'.format(d)):
             config.read(f)
-    if 'i3hub' not in config:
-        config['i3hub'] = {}
-    return config
+            append_remove_extensions(extensions, config)
+    return config, extensions
 
 
 async def setup_i3bar_streams(loop):
@@ -544,11 +560,10 @@ async def i3hub_main(loop, args):
             args.log_file = '{}/i3hub.log'.format(get_runtime_dir())
         setup_logging(loop, args.log_file)
     # load config
-    config = load_config(args.config, args.extra_config_dirs.split(':'))
-    config_load = config['i3hub'].get('extensions') or []
+    config, load = load_config(args.config, args.extra_config_dirs.split(':'))
     # load extensions
     extensions = list(load_extensions(args.extension_path.split(':'),
-        args.load + config_load))
+        args.load + load))
     # connect to i3
     conn = await connect(loop=loop)
     hub = I3Hub(loop, conn, i3bar_reader, i3bar_writer, extensions, config)
