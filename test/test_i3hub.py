@@ -69,26 +69,15 @@ async def test_i3bar_initial_data(i3barmock):
 
 async def test_get_and_update_status(i3barmock, i3api):
     await test_i3bar_initial_data(i3barmock)
-    current_status = i3api.get_status()
-    assert current_status == [1]
-    current_status.clear()
-    current_status.append({'1': 2, '3': '4'})
-    assert i3api.get_status() == [{'1': 2, '3': '4'}]
-    i3api.update_status()
+    i3api.refresh_i3bar()
     i3barmock.expect_update(b',[{"1":2,"3":"4"}]\n')
     await spin()
     i3barmock.verify()
-    # NOTE: the assumption that current_status is still the same object
-    # returned by the last get_status call is not valid when wrapping another
-    # status command. To be safe, extensions should always calls `get_status`
-    # before updating
-    current_status.append(2)
-    i3api.update_status()
+    i3api.refresh_i3bar()
     i3barmock.expect_update(b',[{"1":2,"3":"4"},2]\n')
     await spin()
     i3barmock.verify()
-    current_status.remove(2)
-    i3api.update_status()
+    i3api.refresh_i3bar()
     i3barmock.expect_update(b',[{"1":2,"3":"4"}]\n')
     await spin()
     i3barmock.verify()
@@ -98,22 +87,22 @@ async def test_i3bar_click_event(i3barmock, i3api, statusevents):
     i3barmock.send_click(b'[\n[1,2,3]\n')
     await spin()
     assert len(statusevents) == 1
-    assert statusevents[0] == (i3api, 'i3hub::status_click', [1,2,3])
+    assert statusevents[0] == (i3api, 'i3hub::i3bar_click', [1,2,3])
     i3barmock.send_click(b',["click!"]\n')
     await spin()
-    assert statusevents[1] == (i3api, 'i3hub::status_click', ['click!'])
+    assert statusevents[1] == (i3api, 'i3hub::i3bar_click', ['click!'])
     i3barmock.send_click(b',[""]\n')
     await spin()
-    assert statusevents[2] == (i3api, 'i3hub::status_click', [''])
+    assert statusevents[2] == (i3api, 'i3hub::i3bar_click', [''])
 
 
 async def test_i3bar_stop_cont_events(i3hub, i3api, statusevents):
     await i3hub.dispatch_stop()
     await spin()
-    assert statusevents[0] == (i3api, 'i3hub::status_stop', None)
+    assert statusevents[0] == (i3api, 'i3hub::i3bar_suspend', None)
     await i3hub.dispatch_cont()
     await spin()
-    assert statusevents[1] == (i3api, 'i3hub::status_cont', None)
+    assert statusevents[1] == (i3api, 'i3hub::i3bar_resume', None)
 
 
 async def test_extension_event(i3api, extensionevents):
