@@ -14,7 +14,7 @@ setup(
     py_modules=['i3hub'],
     data_files=[('share/i3hub/extensions', [
         'contrib/status_wrapper.py',
-        'contrib/binding.py',
+        'contrib/nop_binding.py',
         'contrib/keyboard_layout_switcher.py'
         ])],
     author='Thiago de Arruda',

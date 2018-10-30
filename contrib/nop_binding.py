@@ -10,4 +10,4 @@ async def on_binding(i3, event, arg):
     argv = shlex.split(arg['binding']['command'])
     if argv[0] != 'nop' or len(argv) < 2:
         return
-    await i3.emit_event('binding::{}'.format(argv[1]), argv[2:])
+    await i3.emit_event('nop-binding::{}'.format(argv[1]), argv[2:])

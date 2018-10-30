@@ -40,6 +40,6 @@ class KeyboardLayoutSwitcher(object):
     async def on_i3bar_refresh(self, event, status_array):
         self._merge(status_array)
 
-    @listen('extension::binding::switch-layout')
+    @listen('extension::nop-binding::switch-layout')
     async def on_binding(self, event, args):
         await self._switch_layout()
