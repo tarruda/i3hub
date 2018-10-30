@@ -226,7 +226,6 @@ class I3Hub(object):
         return self._i3bar_writer is not None
 
     def _add_event_handler(self, event, handler):
-        # print(handler.__module__)
         print('subscribing {handler} ({module}) to event "{event}"'.format(
             handler=handler,
             module=sys.modules[handler.__module__].__file__,
@@ -255,6 +254,10 @@ class I3Hub(object):
                 # no searching for class extension inside class extensions
                 return
             for _, cls in inspect.getmembers(extension, is_class_extension):
+                if cls._run_as_status_only and not self.run_as_status:
+                    # extension should only be loaded when i3hub is running as
+                    # status command
+                    continue
                 extension_instance = cls(self._i3api)
                 discover_event_handlers(extension_instance,
                         subscribed_i3_events)
@@ -400,11 +403,14 @@ class I3Hub(object):
         self._closed = True
 
 
-def extension(cls):
-    if not (inspect.isclass(cls) and cls.__name__ != 'module'):
-        raise Exception('The @extension decorator is for classes only')
-    cls._i3hub_class_extension = True
-    return cls
+def extension(run_as_status_only=False):
+    def dec(cls):
+        if not (inspect.isclass(cls) and cls.__name__ != 'module'):
+            raise Exception('The @extension decorator is for classes only')
+        cls._run_as_status_only = run_as_status_only
+        cls._i3hub_class_extension = True
+        return cls
+    return dec
 
 
 def listen(event):

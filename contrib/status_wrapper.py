@@ -12,7 +12,7 @@ def ignore_sigs():
     signal.signal(CONT_SIGNAL, signal.SIG_IGN)
 
 
-@extension
+@extension(run_as_status_only=True)
 class Status(object):
     def __init__(self, i3):
         self._i3 = i3
