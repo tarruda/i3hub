@@ -67,8 +67,8 @@ class Status(object):
         await self._proc.wait()
 
     @listen('i3hub::init')
-    async def init(self, event, config):
-        self._command = config.get('status-command', ['i3status'])
+    async def init(self, event, arg):
+        self._command = arg['config'].get('status-command', ['i3status'])
         self._loop.create_task(self.run())
 
     async def run(self):

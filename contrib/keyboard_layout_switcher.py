@@ -25,7 +25,8 @@ class KeyboardLayoutSwitcher(object):
         self._i3.refresh_i3bar()
 
     @listen('i3hub::init')
-    async def on_init(self, event, config):
+    async def on_init(self, event, arg):
+        config = arg['config']
         self._layouts = config.get('layouts', ['us'])
         self._extra_xkb_opts = config.get('extra-xkb-opts', '')
         await self._switch_layout()

@@ -72,7 +72,7 @@ this extension opens an application when a specific workspace is entered:
         if arg['current']['num'] == 6 and arg['change'] == 'init':
             await i3.command('exec i3-sensible-terminal')
 
-In the above example, the command and workspace are hardcodes in the extension.
+In the above example, the command and workspace are hardcoded in the extension.
 Here's a more flexible version that uses i3hub.cfg to allow an arbitrary list of
 i3 commands to be executed on demand when a workspace is created:
 
@@ -86,19 +86,26 @@ i3 commands to be executed on demand when a workspace is created:
     workspace_cmd_map = {}
     
     @listen('i3hub::init')
-    async def on_init(i3, event, config):
-        workspace_cmd_map.update(config.get('workspaces', {}))
+    async def on_init(i3, event, arg):
+        # arg['config'] will contain configuration options set in the extension
+        # section in the config file
+        workspace_cmd_map.update(arg['config'].get('workspaces', {}))
     
     @listen('i3::workspace')
     async def on_workspace(i3, event, arg):
         if arg['change'] != 'init':
+            # only run when workspace is initializing
             return
+        # fetch all commands configured to run on this workspace
         cmds_for_workspace = workspace_cmd_map.get(arg['current']['name'], [])
         for cmd in cmds_for_workspace:
             print('executing', cmd)
-            await i3.command(cmd)
-            # give some time for windows to be created
-            await asyncio.sleep(0.2)
+            reply = await i3.command(cmd)
+            if not reply[0]['success']:
+                print('failed to execute', cmd, file=sys.stderr)
+            if cmd[0:4] == 'exec':
+                # wait some time for the command to create its windows
+                await asyncio.sleep(0.2)
 
 
 Assuming the above script is saved as

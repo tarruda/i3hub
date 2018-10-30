@@ -283,8 +283,10 @@ class I3Hub(object):
             section_name = module_name.split('.')[2]
             if section_name not in self._config:
                 self._config[section_name] = {}
-            await self._invoke_event_handler(handler, event,
-                    self._config[section_name])
+            await self._invoke_event_handler(handler, event, {
+                'running_as_status': self.run_as_status,
+                'config': self._config[section_name]
+                })
 
     async def dispatch_stop(self):
         return await self._dispatch_event('i3hub::i3bar_suspend', None) 
