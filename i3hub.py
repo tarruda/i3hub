@@ -189,11 +189,12 @@ class I3ApiWrapperMeta(type):
 
 
 class I3ApiWrapper(object, metaclass=I3ApiWrapperMeta):
-    def __init__(self, conn, refresh_i3bar_cb, emit_event_cb):
+    def __init__(self, conn, refresh_i3bar_cb, emit_event_cb, runtime_dir):
         self._conn = conn
         self._shutting_down = False
         self._refresh_i3bar_cb = refresh_i3bar_cb
         self._emit_event_cb = emit_event_cb
+        self.runtime_dir = runtime_dir
 
     @property
     def event_loop(self):
@@ -208,13 +209,15 @@ class I3ApiWrapper(object, metaclass=I3ApiWrapperMeta):
 
 class I3Hub(object):
     def __init__(self, loop, conn, i3bar_reader, i3bar_writer,
-            extensions, config, status_output_sort_keys=False):
+            extensions, config, runtime_dir=None,
+            status_output_sort_keys=False):
         self._loop = loop
         self._conn = conn
         self._i3bar_reader = i3bar_reader
         self._i3bar_writer = i3bar_writer
         self._extensions = extensions
         self._config = config
+        self._runtime_dir = runtime_dir
         self._status_output_sort_keys = status_output_sort_keys
         self._first_status_update = True
         self._i3api = None
@@ -373,7 +376,8 @@ class I3Hub(object):
         self._i3api = I3ApiWrapper(self._conn,
                 refresh_i3bar_cb=lambda: self._loop.create_task(
                     self._output_updated_status()),
-                emit_event_cb=self._dispatch_event)
+                emit_event_cb=self._dispatch_event,
+                runtime_dir=self._runtime_dir)
         await self._setup_events()
         futures = []
         if self.run_as_status:
@@ -565,12 +569,14 @@ async def i3hub_main(loop, args):
         i3bar_reader, i3bar_writer = await setup_i3bar_streams(loop)
     else:
         i3bar_reader, i3bar_writer = None, None
+    runtime_dir = '{}/i3hub'.format(get_runtime_dir())
+    os.makedirs(runtime_dir, exist_ok=True)
     if args.log_file or args.run_as_status:
         if not args.log_file:
             # even if a log file is not specified, always use one when running
             # as i3bar status since stdout is already used for writing status
             # updates.
-            args.log_file = '{}/i3hub.log'.format(get_runtime_dir())
+            args.log_file = '{}/i3hub.log'.format(runtime_dir)
         setup_logging(loop, args.log_file)
     # load config
     config, load = load_config(args.config, args.extra_config_dirs.split(':'))
@@ -579,7 +585,8 @@ async def i3hub_main(loop, args):
         args.load + load))
     # connect to i3
     conn = await connect(loop=loop)
-    hub = I3Hub(loop, conn, i3bar_reader, i3bar_writer, extensions, config)
+    hub = I3Hub(loop, conn, i3bar_reader, i3bar_writer, extensions, config,
+            runtime_dir=runtime_dir)
     setup_signals(loop, hub)
     await hub.run()
 
