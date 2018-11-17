@@ -187,7 +187,7 @@ class Taskmaster(object):
                 self._socket_address, loop=self._loop)
         with open(self._vitrc_location, 'w') as f:
             f.write((
-                'map S=:!r echo -n "start\\n%TASKID" | '
+                'map S=:! echo -n "start\\n%TASKID" | '
                 'socat - ABSTRACT-CONNECT:{}<Return>\n'
                 ).format(self._socket_address.decode('utf-8')[1:]))
 

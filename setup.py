@@ -2,7 +2,7 @@ import os
 from setuptools import setup
 
 
-VERSION = '2.0.0'
+VERSION = '2.1.0'
 REPO    = 'https://github.com/tarruda/i3hub'
 
 
@@ -15,7 +15,10 @@ setup(
     data_files=[('share/i3hub/extensions', [
         'contrib/status_wrapper.py',
         'contrib/nop_binding.py',
-        'contrib/keyboard_layout_switcher.py'
+        'contrib/keyboard_layout_switcher.py',
+        'contrib/taskmaster/__init__.py',
+        'contrib/taskmaster/alarm-pomodoro.oga',
+        'contrib/taskmaster/alarm-rest.oga',
         ])],
     author='Thiago de Arruda',
     author_email='tpadilha84@gmail.com',
