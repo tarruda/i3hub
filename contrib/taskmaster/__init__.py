@@ -2,6 +2,7 @@ import asyncio
 import glob
 import json
 import os
+import re
 
 from datetime import datetime
 
@@ -13,21 +14,38 @@ POMODORO_TIME = 25 * 60
 REST_TIME = 5 * 60
 ALARM_POMODORO = os.path.join(os.path.dirname(__file__), 'alarm-pomodoro.oga')
 ALARM_REST = os.path.join(os.path.dirname(__file__), 'alarm-rest.oga')
+BELL = os.path.join(os.path.dirname(__file__), 'bell.oga')
 POMODORO_COLOR = '#0e93cb'
 REST_COLOR = '#00b722'
+WORKSPACE_POLICY_PATTERN = re.compile('^(tag|project):(.+)$', re.IGNORECASE)
+
 
 
 class Task(object):
-    def __init__(self, task_dict):
+    def __init__(self, task_dict, tags_allowed_workspaces,
+            projects_allowed_workspaces):
         self.id = task_dict['id']
         self.description = task_dict['description']
-        self.project = task_dict.get('project', None)
+        project = task_dict.get('project', None)
+        tags = task_dict.get('tags', [])
+        allowed = []
+        if project and project in projects_allowed_workspaces:
+            allowed += projects_allowed_workspaces[project]
+        for tag in tags:
+            if tag in projects_allowed_workspaces:
+                allowed += tags_allowed_workspaces[tag]
+        self.first_allowed_workspace = allowed[0] if allowed else None
+        self.allowed_workspaces = set(allowed)
 
     def __str__(self):
         return self.description
 
+    def is_workspace_allowed(self, ws):
+        return (not self.allowed_workspaces or ws == 'tasks' or
+                ws in self.allowed_workspaces)
 
-@extension()
+
+@extension(run_as_status_only=True)
 class Taskmaster(object):
     def __init__(self, i3):
         self._i3 = i3
@@ -52,6 +70,10 @@ class Taskmaster(object):
         self._task = None
         self._pomodoro_count = 0
         self._pomodoro_loop_task = None
+        self._tags_allowed_workspaces = None
+        self._projects_allowed_workspaces = None
+        self._warning_workspace_locked = False
+        self._current_workspace = None
 
     def _argv(self):
         argv = ['VITRC={} urxvt -title {}'.format(self._vitrc_path,
@@ -83,6 +105,7 @@ class Taskmaster(object):
 
     def _i3bar_status(self):
         if self._status == 'started':
+            color = self._pomodoro_color
             return {
                 'name': 'i3hub_taskmaster',
                 'markup': 'none',
@@ -121,10 +144,13 @@ class Taskmaster(object):
                     'taskwarrior task export failed: "{}"'.format(
                         stderr.decode('utf8').strip()))
             return
-        self._task = Task(json.loads(stdout.decode('utf-8'))[0])
+        self._task = Task(json.loads(stdout.decode('utf-8'))[0],
+                self._tags_allowed_workspaces,
+                self._projects_allowed_workspaces)
         self._pomodoro_count = 0
         self._start_time = datetime.now()
         self._status = 'started'
+        self._switch_to_first_allowed_workspace()
         self._message(writer, 'started task "{}"'.format(self._task))
         self._pomodoro_loop_task = self._loop.create_task(
                 self._pomodoro_loop())
@@ -139,7 +165,7 @@ class Taskmaster(object):
             await proc.wait()
         self._loop.create_task(paplay(path))
 
-    def _task_being_edited(self):
+    def _editing_task(self):
         return bool(glob.glob('{}/task.*.task'.format(self._task_data_dir)))
 
     async def _on_request(self, reader, writer):
@@ -150,6 +176,28 @@ class Taskmaster(object):
             self._message(writer, 'invalid request')
         await writer.drain()
         writer.close()
+
+    def _warn_workspace_locked(self):
+        if self._warning_workspace_locked:
+            return
+        self._warning_workspace_locked = True
+        self._play_sound(self._bell)
+        async def blink():
+            blink_colors = [self._pomodoro_color, '#FF8C00']
+            count = 12
+            while count:
+                count -= 1
+                self._pomodoro_color = blink_colors[count % 2]
+                self._i3.refresh_i3bar()
+                await asyncio.sleep(0.2)
+            self._warning_workspace_locked = False
+        self._loop.create_task(blink())
+
+    def _switch_to_first_allowed_workspace(self):
+        if (self._task.first_allowed_workspace and not
+                self._task.is_workspace_allowed(self._current_workspace)):
+            self._loop.create_task(self._i3.command('workspace {}'.format(
+                self._task.first_allowed_workspace)))
 
     async def _pomodoro_loop(self):
         self._stop_future = asyncio.Future()
@@ -169,6 +217,7 @@ class Taskmaster(object):
                         self._stop()
                 else:
                     assert self._status == 'resting'
+                    self._switch_to_first_allowed_workspace()
                     self._status = 'started'
                     self._start_time = datetime.now()
                     self._play_sound(self._alarm_pomodoro)
@@ -177,6 +226,7 @@ class Taskmaster(object):
         self._i3.refresh_i3bar()
         tw = await asyncio.create_subprocess_exec('task', task_id, 'stop')
         await tw.wait()
+        self._task = None
                 
     @listen('i3hub::init')
     async def on_init(self, event, arg):
@@ -187,6 +237,7 @@ class Taskmaster(object):
         self._rest_time = config.get('rest-time', REST_TIME)
         self._alarm_pomodoro = config.get('alarm-pomodoro', ALARM_POMODORO)
         self._alarm_rest = config.get('alarm-rest', ALARM_REST)
+        self._bell = config.get('bell', BELL)
         self._pomodoro_color = config.get('pomodoro-color', POMODORO_COLOR)
         self._rest_color = config.get('rest-color', REST_COLOR)
         self._server = await asyncio.start_unix_server(self._on_request,
@@ -200,6 +251,26 @@ class Taskmaster(object):
                 'map S=:! echo -n "start\\n%TASKID" | '
                 'socat - ABSTRACT-CONNECT:{}<Return>\n'
                 ).format(self._socket_address.decode('utf-8')[1:]))
+        workspace_policy = config.get('workspace-policy', {})
+        self._tags_allowed_workspaces = {}
+        self._projects_allowed_workspaces = {}
+        for k, v in workspace_policy.items():
+            m = WORKSPACE_POLICY_PATTERN.match(k)
+            if not m:
+                print('invalid workspace policy key: {}'.format(k))
+                continue
+            if not isinstance(v, list):
+                print('invalid workspace policy value must be a list')
+                continue
+            allowed = list((str(i) for i in v))
+            if m.group(1) == 'tag':
+                self._tags_allowed_workspaces[m.group(2)] = allowed
+            else:
+                self._projects_allowed_workspaces[m.group(2)] = allowed
+        for workspace in await self._i3.get_workspaces():
+            if workspace['focused']:
+                self._current_workspace = workspace['name']
+                break
 
     @listen('i3hub::i3bar_refresh')
     async def on_i3bar_refresh(self, event, status_array):
@@ -209,11 +280,19 @@ class Taskmaster(object):
 
     @listen('i3::workspace')
     async def on_workspace(self, event, arg):
-        if arg['change'] == 'init' and arg['current']['name'] == 'tasks':
+        change = arg['change']
+        new = arg['current']['name']
+        if change == 'focus':
+            self._current_workspace = new
+            old = arg['old']['name']
+            if (self._status == 'started'
+                    and not self._task.is_workspace_allowed(new)):
+                await self._i3.command('workspace {}'.format(old))
+                self._warn_workspace_locked()
+            if old == 'tasks' and not self._editing_task():
+                await self._i3.command('[workspace=tasks] kill')
+        elif change == 'init' and new == 'tasks':
             await self._i3.command('exec {}'.format(self._argv()))
-        if (arg['change'] == 'focus' and arg['old']['name'] == 'tasks' and
-            not self._task_being_edited()):
-            await self._i3.command('[workspace=tasks] kill')
 
     @listen('i3::shutdown')
     async def on_shutdown(self, event, arg):

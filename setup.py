@@ -20,6 +20,7 @@ setup(
         'contrib/taskmaster/__init__.py',
         'contrib/taskmaster/alarm-pomodoro.oga',
         'contrib/taskmaster/alarm-rest.oga',
+        'contrib/taskmaster/bell.oga',
         ])],
     author='Thiago de Arruda',
     author_email='tpadilha84@gmail.com',
