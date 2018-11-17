@@ -16,6 +16,7 @@ setup(
         'contrib/status_wrapper.py',
         'contrib/nop_binding.py',
         'contrib/keyboard_layout_switcher.py',
+        'contrib/split_alternator.py',
         'contrib/taskmaster/__init__.py',
         'contrib/taskmaster/alarm-pomodoro.oga',
         'contrib/taskmaster/alarm-rest.oga',
