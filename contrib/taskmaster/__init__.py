@@ -10,7 +10,6 @@ from i3hub import extension, listen, status_array_merge
 SOCKET_ADDRESS = b'\0i3hub-taskmaster'
 POMODORO_TIME = 25 * 60
 REST_TIME = 5 * 60
-LONG_REST_TIME = 20 * 60
 ALARM_POMODORO = os.path.join(os.path.dirname(__file__), 'alarm-pomodoro.oga')
 ALARM_REST = os.path.join(os.path.dirname(__file__), 'alarm-rest.oga')
 POMODORO_COLOR = '#0e93cb'
@@ -39,7 +38,6 @@ class Taskmaster(object):
         self._socket_address = SOCKET_ADDRESS
         self._pomodoro_time = None
         self._rest_time = None
-        self._long_rest_time = None
         self._alarm_pomodoro = None
         self._alarm_rest = None
         self._pomodoro_color = None
@@ -49,7 +47,6 @@ class Taskmaster(object):
         self._start_time = None
         self._stop_future = None
         self._task = None
-        self._pomodoro_session_stop = True
         self._pomodoro_count = 0
         self._pomodoro_loop_task = None
 
@@ -65,10 +62,7 @@ class Taskmaster(object):
         if self._status == 'started':
             return self._pomodoro_time
         elif self._status == 'resting':
-            if self._pomodoro_count % 4 == 0:
-                return self._long_rest_time
-            else:
-                return self._rest_time
+            return self._rest_time
         raise Exception('Invalid state')
 
     def _remaining(self):
@@ -165,6 +159,8 @@ class Taskmaster(object):
                     self._status = 'resting'
                     self._start_time = datetime.now()
                     self._play_sound(self._alarm_rest)
+                    if self._pomodoro_count % 4 == 0:
+                        self._stop()
                 else:
                     assert self._status == 'resting'
                     self._status = 'started'
@@ -183,7 +179,6 @@ class Taskmaster(object):
         self._window_title = config.get('window-title', 'tasks')
         self._pomodoro_time = config.get('pomodoro-time', POMODORO_TIME)
         self._rest_time = config.get('rest-time', REST_TIME)
-        self._long_rest_time = config.get('long-rest-time', LONG_REST_TIME)
         self._alarm_pomodoro = config.get('alarm-pomodoro', ALARM_POMODORO)
         self._alarm_rest = config.get('alarm-rest', ALARM_REST)
         self._pomodoro_color = config.get('pomodoro-color', POMODORO_COLOR)
