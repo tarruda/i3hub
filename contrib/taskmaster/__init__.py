@@ -1,4 +1,5 @@
 import asyncio
+import glob
 import json
 import os
 
@@ -31,7 +32,9 @@ class Taskmaster(object):
     def __init__(self, i3):
         self._i3 = i3
         self._loop = i3.event_loop
-        self._vitrc_location = '{}/vitrc'.format(self._i3.runtime_dir)
+        self._vitrc_path = '{}/vitrc'.format(self._i3.runtime_dir)
+        self._task_data_dir = os.getenv('TASKDATA',
+                '{}/.task'.format(os.getenv('HOME')))
         self._command = 'vit'
         self._font = None
         self._window_title = None
@@ -51,7 +54,7 @@ class Taskmaster(object):
         self._pomodoro_loop_task = None
 
     def _argv(self):
-        argv = ['VITRC={} urxvt -title {}'.format(self._vitrc_location,
+        argv = ['VITRC={} urxvt -title {}'.format(self._vitrc_path,
             self._window_title)]
         if self._font:
             argv.append('-fn "{}"'.format(self._font))
@@ -136,6 +139,9 @@ class Taskmaster(object):
             await proc.wait()
         self._loop.create_task(paplay(path))
 
+    def _task_being_edited(self):
+        return bool(glob.glob('{}/task.*.task'.format(self._task_data_dir)))
+
     async def _on_request(self, reader, writer):
         request = (await reader.read(1024)).decode('utf-8').split('\n')
         if request[0] == 'start':
@@ -185,8 +191,12 @@ class Taskmaster(object):
         self._rest_color = config.get('rest-color', REST_COLOR)
         self._server = await asyncio.start_unix_server(self._on_request,
                 self._socket_address, loop=self._loop)
-        with open(self._vitrc_location, 'w') as f:
-            f.write((
+        user_vitrc = os.getenv('VITRC', '{}/.vitrc'.format(os.getenv('HOME')))
+        with open(self._vitrc_path, 'w') as f:
+            if os.path.exists(user_vitrc):
+                with open(user_vitrc) as vrc:
+                    f.write(vrc.read())
+            f.write(('\n'
                 'map S=:! echo -n "start\\n%TASKID" | '
                 'socat - ABSTRACT-CONNECT:{}<Return>\n'
                 ).format(self._socket_address.decode('utf-8')[1:]))
@@ -201,7 +211,8 @@ class Taskmaster(object):
     async def on_workspace(self, event, arg):
         if arg['change'] == 'init' and arg['current']['name'] == 'tasks':
             await self._i3.command('exec {}'.format(self._argv()))
-        if arg['change'] == 'focus' and arg['old']['name'] == 'tasks':
+        if (arg['change'] == 'focus' and arg['old']['name'] == 'tasks' and
+            not self._task_being_edited()):
             await self._i3.command('[workspace=tasks] kill')
 
     @listen('i3::shutdown')
