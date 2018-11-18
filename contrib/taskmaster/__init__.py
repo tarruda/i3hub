@@ -23,18 +23,17 @@ TAG_PROJECT_SPEC = re.compile('^(tag|project):(.+)$', re.IGNORECASE)
 
 
 class Task(object):
-    def __init__(self, task_dict, tags_allowed_workspaces,
-            projects_allowed_workspaces):
+    def __init__(self, task_dict, allowed_workspaces):
         self.id = task_dict['id']
         self.description = task_dict['description']
         project = task_dict.get('project', None)
         tags = task_dict.get('tags', [])
         allowed = []
-        if project and project in projects_allowed_workspaces:
-            allowed += projects_allowed_workspaces[project]
+        if project and ('project', project) in allowed_workspaces:
+            allowed += projects_allowed_workspaces[('project', project)]
         for tag in tags:
-            if tag in tags_allowed_workspaces:
-                allowed += tags_allowed_workspaces[tag]
+            if ('tag', tag) in allowed_workspaces:
+                allowed += allowed_workspaces[('tag', tag)]
         self.first_allowed_workspace = allowed[0] if allowed else None
         self.allowed_workspaces = set(allowed)
 
@@ -71,8 +70,7 @@ class Taskmaster(object):
         self._task = None
         self._pomodoro_count = 0
         self._pomodoro_loop_task = None
-        self._tags_allowed_workspaces = None
-        self._projects_allowed_workspaces = None
+        self._allowed_workspaces = None
         self._warning_workspace_locked = False
         self._current_workspace = None
         self._calendar = None
@@ -159,8 +157,7 @@ class Taskmaster(object):
                         stderr.decode('utf8').strip()))
             return
         self._task = Task(json.loads(stdout.decode('utf-8'))[0],
-                self._tags_allowed_workspaces,
-                self._projects_allowed_workspaces)
+                self._allowed_workspaces)
         self._pomodoro_count = 0
         self._start_time = datetime.now()
         self._status = 'started'
@@ -266,8 +263,7 @@ class Taskmaster(object):
                 'socat - ABSTRACT-CONNECT:{}<Return>\n'
                 ).format(self._socket_address.decode('utf-8')[1:]))
         workspace_policy = config.get('workspace-policy', {})
-        self._tags_allowed_workspaces = {}
-        self._projects_allowed_workspaces = {}
+        self._allowed_workspaces = {}
         for k, v in workspace_policy.items():
             m = TAG_PROJECT_SPEC.match(k)
             if not m:
@@ -277,10 +273,7 @@ class Taskmaster(object):
                 print('invalid workspace policy value must be a list')
                 continue
             allowed = list((str(i) for i in v))
-            if m.group(1) == 'tag':
-                self._tags_allowed_workspaces[m.group(2)] = allowed
-            else:
-                self._projects_allowed_workspaces[m.group(2)] = allowed
+            self._allowed_workspaces[(m.group(1), m.group(2))] = allowed
         for workspace in await self._i3.get_workspaces():
             if workspace['focused']:
                 self._current_workspace = workspace['name']
