@@ -21,6 +21,11 @@ REST_COLOR = '#00b722'
 TAG_PROJECT_SPEC = re.compile('^(tag|project):(.+)$', re.IGNORECASE)
 
 
+def now():
+    now = datetime.now()
+    # zero time components after minute, or the test will most likely fail
+    return datetime(now.year, now.month, now.day, now.hour, now.minute)
+
 
 class Task(object):
     def __init__(self, task_dict, allowed_workspaces):
@@ -74,14 +79,14 @@ class Taskmaster(object):
         self._warning_workspace_locked = False
         self._current_workspace = None
         self._calendar = None
+        self._work_cron = None
+        self._killing_tasks = False
 
     def _coefficients(self):
-        now = datetime.now()
-        # zero time components after minute, or the test will most likely fail
-        now = datetime(now.year, now.month, now.day, now.hour, now.minute)
+        d = now()
         rv = []
         for spec, crontab in self._calendar.items():
-            if crontab.test(now):
+            if crontab.test(d):
                 kind, value = spec
                 rv.append('rc.urgency.user.{}.{}.coefficient=20.0'.format(kind,
                     value))
@@ -280,6 +285,9 @@ class Taskmaster(object):
                 break
         self._calendar = {}
         for spec, cron_expr in config.get('calendar', {}).items():
+            if spec == 'work':
+                self._work_cron = crontab.CronTab(str(cron_expr))
+                continue
             m = TAG_PROJECT_SPEC.match(spec)
             if m:
                 spec = m.group(1), m.group(2)
@@ -292,6 +300,25 @@ class Taskmaster(object):
         if status:
             status_array_merge(status_array, status)
 
+    def _kill_tasks(self):
+        async def kill_soon():
+            await asyncio.sleep(0.3)
+            if self._current_workspace != 'tasks':
+                await self._i3.command('[workspace=tasks] kill')
+            self._killing_tasks = False
+        if not self._killing_tasks:
+            self._killing_tasks = True
+            self._loop.create_task(kill_soon())
+
+    def _next_workspace(self, new, old):
+        if (self._status == 'started' and not
+                self._task.is_workspace_allowed(new)):
+            return old
+        elif (self._status == 'stopped' and self._work_cron and
+                self._work_cron.test(now())):
+            return 'tasks'
+        return new
+
     @listen('i3::workspace')
     async def on_workspace(self, event, arg):
         change = arg['change']
@@ -299,12 +326,13 @@ class Taskmaster(object):
         if change == 'focus':
             self._current_workspace = new
             old = arg['old']['name']
-            if (self._status == 'started'
-                    and not self._task.is_workspace_allowed(new)):
-                await self._i3.command('workspace {}'.format(old))
-                self._warn_workspace_locked()
-            if old == 'tasks' and not self._editing_task():
-                await self._i3.command('[workspace=tasks] kill')
+            next_ws = self._next_workspace(new, old)
+            if next_ws != new:
+                await self._i3.command('workspace {}'.format(next_ws))
+                if self._task:
+                    self._warn_workspace_locked()
+            elif old == 'tasks' and not self._editing_task():
+                self._kill_tasks()
         elif change == 'init' and new == 'tasks':
             await self._i3.command('exec {}'.format(self._argv()))
 
