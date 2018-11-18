@@ -1,4 +1,5 @@
 import asyncio
+import crontab
 import glob
 import json
 import os
@@ -17,7 +18,7 @@ ALARM_REST = os.path.join(os.path.dirname(__file__), 'alarm-rest.oga')
 BELL = os.path.join(os.path.dirname(__file__), 'bell.oga')
 POMODORO_COLOR = '#0e93cb'
 REST_COLOR = '#00b722'
-WORKSPACE_POLICY_PATTERN = re.compile('^(tag|project):(.+)$', re.IGNORECASE)
+TAG_PROJECT_SPEC = re.compile('^(tag|project):(.+)$', re.IGNORECASE)
 
 
 
@@ -32,7 +33,7 @@ class Task(object):
         if project and project in projects_allowed_workspaces:
             allowed += projects_allowed_workspaces[project]
         for tag in tags:
-            if tag in projects_allowed_workspaces:
+            if tag in tags_allowed_workspaces:
                 allowed += tags_allowed_workspaces[tag]
         self.first_allowed_workspace = allowed[0] if allowed else None
         self.allowed_workspaces = set(allowed)
@@ -74,13 +75,26 @@ class Taskmaster(object):
         self._projects_allowed_workspaces = None
         self._warning_workspace_locked = False
         self._current_workspace = None
+        self._calendar = None
+
+    def _coefficients(self):
+        now = datetime.now()
+        # zero time components after minute, or the test will most likely fail
+        now = datetime(now.year, now.month, now.day, now.hour, now.minute)
+        rv = []
+        for spec, crontab in self._calendar.items():
+            if crontab.test(now):
+                kind, value = spec
+                rv.append('rc.urgency.user.{}.{}.coefficient=20.0'.format(kind,
+                    value))
+        return ' '.join(rv)
 
     def _argv(self):
         argv = ['VITRC={} urxvt -title {}'.format(self._vitrc_path,
             self._window_title)]
         if self._font:
             argv.append('-fn "{}"'.format(self._font))
-        argv.append('-e {}'.format(self._command))
+        argv.append('-e {} {}'.format(self._command, self._coefficients()))
         return ' '.join(argv)
 
     def _total_time(self):
@@ -255,7 +269,7 @@ class Taskmaster(object):
         self._tags_allowed_workspaces = {}
         self._projects_allowed_workspaces = {}
         for k, v in workspace_policy.items():
-            m = WORKSPACE_POLICY_PATTERN.match(k)
+            m = TAG_PROJECT_SPEC.match(k)
             if not m:
                 print('invalid workspace policy key: {}'.format(k))
                 continue
@@ -271,6 +285,13 @@ class Taskmaster(object):
             if workspace['focused']:
                 self._current_workspace = workspace['name']
                 break
+        self._calendar = {}
+        for spec, cron_expr in config.get('calendar', {}).items():
+            m = TAG_PROJECT_SPEC.match(spec)
+            if m:
+                spec = m.group(1), m.group(2)
+                ct = crontab.CronTab(str(cron_expr))
+                self._calendar[spec] = ct
 
     @listen('i3hub::i3bar_refresh')
     async def on_i3bar_refresh(self, event, status_array):
