@@ -28,6 +28,8 @@ class SplitAlternator(object):
     async def on_workspace(self, event, arg):
         if arg['change'] == 'focus':
             self._current_workspace = arg['current']['name']
+        elif arg['change'] == 'init':
+            await self._i3.command('split toggle')
 
     @listen('i3::window')
     async def on_window(self, event, arg):
