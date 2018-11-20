@@ -19,7 +19,7 @@ class WorkspaceMaster(object):
     async def on_init(self, event, arg):
         config = arg['config']
         self._workspaces = {}
-        for k, v in config.get('workspaces_config', {}).items():
+        for k, v in config.get('workspaces', {}).items():
             directory = v.get('directory', None)
             if not directory:
                 self._workspaces[k] = v.get('commands', [])
