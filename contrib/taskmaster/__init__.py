@@ -35,7 +35,7 @@ class Task(object):
         tags = task_dict.get('tags', [])
         allowed = []
         if project and ('project', project) in allowed_workspaces:
-            allowed += projects_allowed_workspaces[('project', project)]
+            allowed += allowed_workspaces[('project', project)]
         for tag in tags:
             if ('tag', tag) in allowed_workspaces:
                 allowed += allowed_workspaces[('tag', tag)]
