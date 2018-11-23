@@ -1,3 +1,7 @@
+# This is a hacky time tracker (pomodoro) and todo manager (on top of
+# vit/taskwarrior) for i3. It was created to reduce the amount of time I spend
+# procastinating, and is very personal to my workflow, so it probably won't be
+# useful to anyone else.
 import asyncio
 import crontab
 import glob
@@ -25,6 +29,19 @@ def now():
     now = datetime.now()
     # zero time components after minute, or the test will most likely fail
     return datetime(now.year, now.month, now.day, now.hour, now.minute)
+
+
+class Calendar(object):
+    def __init__(self, cron_exprs):
+        if isinstance(cron_exprs, str):
+            cron_exprs = [cron_exprs]
+        self._crons = list(crontab.CronTab(str(e)) for e in cron_exprs)
+
+    def test(self, date):
+        for ct in self._crons:
+            if ct.test(date):
+                return True
+        return False
 
 
 class Task(object):
@@ -79,14 +96,14 @@ class Taskmaster(object):
         self._warning_workspace_locked = False
         self._current_workspace = None
         self._calendar = None
-        self._work_cron = None
+        self._work_calendar = None
         self._killing_tasks = False
 
     def _coefficients(self):
         d = now()
         rv = []
-        for spec, crontab in self._calendar.items():
-            if crontab.test(d):
+        for spec, calendar in self._calendar.items():
+            if calendar.test(d):
                 kind, value = spec
                 rv.append('rc.urgency.user.{}.{}.coefficient=20.0'.format(kind,
                     value))
@@ -284,15 +301,14 @@ class Taskmaster(object):
                 self._current_workspace = workspace['name']
                 break
         self._calendar = {}
-        for spec, cron_expr in config.get('calendar', {}).items():
+        for spec, cron_exprs in config.get('calendar', {}).items():
             if spec == 'work':
-                self._work_cron = crontab.CronTab(str(cron_expr))
+                self._work_calendar = Calendar(cron_exprs)
                 continue
             m = TAG_PROJECT_SPEC.match(spec)
             if m:
                 spec = m.group(1), m.group(2)
-                ct = crontab.CronTab(str(cron_expr))
-                self._calendar[spec] = ct
+                self._calendar[spec] = Calendar(cron_exprs)
 
     @listen('i3hub::i3bar_refresh')
     async def on_i3bar_refresh(self, event, status_array):
@@ -314,8 +330,8 @@ class Taskmaster(object):
         if (self._status == 'started' and not
                 self._task.is_workspace_allowed(new)):
             return old
-        elif (self._status == 'stopped' and self._work_cron and
-                self._work_cron.test(now())):
+        elif (self._status == 'stopped' and self._work_calendar and
+                self._work_calendar.test(now())):
             return 'tasks'
         return new
 
