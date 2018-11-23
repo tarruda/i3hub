@@ -49,7 +49,7 @@ class WorkspaceMaster(object):
     @listen('extension::nop-binding::select-workspace')
     async def on_select_workspace(self, event, arg):
         rofi = await asyncio.create_subprocess_exec('rofi', '-p',
-                'Select workspace', '-dmenu', stdin=asyncio.subprocess.PIPE,
+                'Select workspace ', '-dmenu', stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE)
         workspaces = '\n'.join(self._workspaces.keys())
         selected, _ = await rofi.communicate(workspaces.encode('utf-8'))
