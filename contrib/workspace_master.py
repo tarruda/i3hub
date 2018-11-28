@@ -21,20 +21,23 @@ class WorkspaceMaster(object):
         self._workspaces = {}
         for k, v in config.get('workspaces', {}).items():
             directory = v.get('directory', None)
+            self._workspaces[k] = {
+                'materialized': v.get('materialized', False)
+            }
             if not directory:
-                self._workspaces[k] = v.get('commands', [])
+                self._workspaces[k]['commands'] = v.get('commands', [])
                 continue
-            self._workspaces[k] = []
+            self._workspaces[k]['commands'] = []
             for cmd in v['commands']:
                 m = EXEC_PATTERN.match(cmd)
                 if m:
                     prefix = m.group(0)
                     cmd = '{} cd {} && {}'.format(prefix, directory,
                             cmd[len(prefix):])
-                self._workspaces[k].append(cmd)
+                self._workspaces[k]['commands'].append(cmd)
 
-    async def _run_workspace_commands(self, commands):
-        for cmd in commands:
+    async def _run_workspace_commands(self, workspace):
+        for cmd in workspace['commands']:
             if cmd == '[wait-for-window]':
                 f = asyncio.Future()
                 self._wait_future = f
@@ -51,7 +54,14 @@ class WorkspaceMaster(object):
         rofi = await asyncio.create_subprocess_exec('rofi', '-p',
                 'Select workspace ', '-dmenu', stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE)
-        workspaces = '\n'.join(self._workspaces.keys())
+        active_workspaces = map(lambda w: w['name'],
+                await self._i3.get_workspaces())
+        shown_workspaces = []
+        for k, v in self._workspaces.items():
+            if v['materialized'] and k not in active_workspaces:
+                continue
+            shown_workspaces.append(k)
+        workspaces = '\n'.join(shown_workspaces)
         selected, _ = await rofi.communicate(workspaces.encode('utf-8'))
         selected = selected.decode('utf-8').strip()
         if not selected:
@@ -73,8 +83,8 @@ class WorkspaceMaster(object):
         if arg['change'] != 'init':
             # only run when workspace is initializing
             return
-        commands = self._workspaces.get(arg['current']['name'], None)
-        if commands:
+        workspace = self._workspaces.get(arg['current']['name'], None)
+        if workspace:
             # run commands in a separate task, since there's the possibility of
             # long blocking due to waiting for windows to spawn
-            self._loop.create_task(self._run_workspace_commands(commands))
+            self._loop.create_task(self._run_workspace_commands(workspace))
