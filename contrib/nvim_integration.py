@@ -5,7 +5,6 @@ import shlex
 import mpack.asyncio
 from i3hub import extension, listen
 
-
 @extension()
 class NvimIntegration(object):
     def __init__(self, i3):
@@ -150,6 +149,8 @@ class NvimIntegration(object):
 
     @listen('i3hub::init')
     async def on_init(self, event, arg):
+        self._i3.require('nop_binding')
+
         def find_focused_window(node):
             if node['focused']:
                 return node

@@ -10,6 +10,8 @@ class SplitAlternator(object):
 
     @listen('i3hub::init')
     async def on_init(self, event, arg):
+        self._i3.require('nop_binding')
+
         config = arg['config']
         self._enabled_workspaces = set(config.get('workspaces', []))
         for workspace in await self._i3.get_workspaces():

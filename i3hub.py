@@ -189,11 +189,13 @@ class I3ApiWrapperMeta(type):
 
 
 class I3ApiWrapper(object, metaclass=I3ApiWrapperMeta):
-    def __init__(self, conn, refresh_i3bar_cb, emit_event_cb, runtime_dir):
+    def __init__(self, conn, refresh_i3bar_cb, emit_event_cb,
+            require_cb, runtime_dir):
         self._conn = conn
         self._shutting_down = False
         self._refresh_i3bar_cb = refresh_i3bar_cb
         self._emit_event_cb = emit_event_cb
+        self._require_cb = require_cb
         self.runtime_dir = runtime_dir
 
     @property
@@ -202,6 +204,9 @@ class I3ApiWrapper(object, metaclass=I3ApiWrapperMeta):
 
     def refresh_i3bar(self):
         return self._refresh_i3bar_cb()
+
+    def require(self, name):
+        return self._require_cb(name)
 
     async def emit_event(self, event, arg):
         await self._emit_event_cb('extension::' + event, arg)
@@ -216,6 +221,7 @@ class I3Hub(object):
         self._i3bar_reader = i3bar_reader
         self._i3bar_writer = i3bar_writer
         self._extensions = extensions
+        self._registered_extensions = {}
         self._config = config
         self._runtime_dir = runtime_dir
         self._status_output_sort_keys = status_output_sort_keys
@@ -244,8 +250,29 @@ class I3Hub(object):
         def is_event_handler(obj):
             return callable(obj) and hasattr(obj, '_i3hub_listen_to')
 
-        def discover_event_handlers(extension, subscribed_i3_events):
-            module_extension = extension.__class__.__name__ == 'module'
+        def discover_event_handlers(name, extension, subscribed_i3_events):
+            is_module = extension.__class__.__name__ == 'module'
+
+            if is_module: 
+                # if this is a module, check for any class extensions inside it
+                for _, cls in inspect.getmembers(extension, is_class_extension):
+                    if cls._run_as_status_only and not self.run_as_status:
+                        # extension should only be loaded when i3hub is running
+                        # as status command
+                        continue
+                    extension_instance = cls(self._i3api)
+                    discover_event_handlers(name, extension_instance,
+                            subscribed_i3_events)
+                    return  # extension registered
+
+            # don't allow more than one extension per name (this exists to
+            # block a single module from declaring multiple classes as
+            # extensions)
+            if name in self._registered_extensions:
+                raise Exception(
+                        'More than one extension registered as "{}"'.format(
+                            name))
+
             for _, handler in inspect.getmembers(extension, is_event_handler):
                 for event in handler._i3hub_listen_to:
                     event.split('::', maxsplit=1)
@@ -253,21 +280,12 @@ class I3Hub(object):
                     if ns == 'i3':
                         subscribed_i3_events.add(ev)
                     self._add_event_handler(event, handler)
-            if not module_extension:
-                # no searching for class extension inside class extensions
-                return
-            for _, cls in inspect.getmembers(extension, is_class_extension):
-                if cls._run_as_status_only and not self.run_as_status:
-                    # extension should only be loaded when i3hub is running as
-                    # status command
-                    continue
-                extension_instance = cls(self._i3api)
-                discover_event_handlers(extension_instance,
-                        subscribed_i3_events)
+            self._registered_extensions[name] = extension
+            print('registered extension "{}"'.format(name))
 
         subscribed_i3_events = set()
-        for extension in self._extensions:
-            discover_event_handlers(extension, subscribed_i3_events)
+        for name, extension in self._extensions:
+            discover_event_handlers(name, extension, subscribed_i3_events)
         # subscribe the connection to all i3 events listened by extensions
         await self._conn.subscribe(list(subscribed_i3_events))
 
@@ -369,6 +387,13 @@ class I3Hub(object):
                 self._loop.create_task(
                         self._dispatch_event('i3::' + event, payload))
 
+    def _require(self, name):
+        rv = self._registered_extensions.get(name, None)
+        if not rv:
+            print('Extension "{}" is not loaded'.format(name))
+            sys.exit(1)
+        return rv
+
     async def run(self):
         if self._closed:
             raise Exception('This I3Hub instance was already closed')
@@ -377,6 +402,7 @@ class I3Hub(object):
                 refresh_i3bar_cb=lambda: self._loop.create_task(
                     self._output_updated_status()),
                 emit_event_cb=self._dispatch_event,
+                require_cb=self._require,
                 runtime_dir=self._runtime_dir)
         await self._setup_events()
         futures = []
@@ -494,7 +520,8 @@ def load_extensions(paths, extensions):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         sys.modules[spec_name] = module
-        yield module
+        extension_name = spec_name.replace('i3hub.extensions.', '')
+        yield extension_name, module
 
 
 def append_remove_extensions(extensions, config):

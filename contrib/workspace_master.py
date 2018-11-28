@@ -17,6 +17,8 @@ class WorkspaceMaster(object):
 
     @listen('i3hub::init')
     async def on_init(self, event, arg):
+        self._i3.require('nop_binding')
+
         config = arg['config']
         self._workspaces = {}
         for k, v in config.get('workspaces', {}).items():
