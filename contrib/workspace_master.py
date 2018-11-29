@@ -63,7 +63,8 @@ class WorkspaceMaster(object):
             if v['materialized'] and k not in active_workspaces:
                 continue
             shown_workspaces.append(k)
-        workspaces = '\n'.join(shown_workspaces)
+        workspaces = '\n'.join(sorted(shown_workspaces,
+            key=lambda w: w not in active_workspaces))
         selected, _ = await rofi.communicate(workspaces.encode('utf-8'))
         selected = selected.decode('utf-8').strip()
         if not selected:
