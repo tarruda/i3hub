@@ -254,24 +254,30 @@ class I3Hub(object):
             is_module = extension.__class__.__name__ == 'module'
 
             if is_module: 
+                n = None
                 # if this is a module, check for any class extensions inside it
                 for _, cls in inspect.getmembers(extension, is_class_extension):
-                    if cls._run_as_status_only and not self.run_as_status:
-                        # extension should only be loaded when i3hub is running
-                        # as status command
-                        continue
                     extension_instance = cls(self._i3api)
-                    discover_event_handlers(name, extension_instance,
-                            subscribed_i3_events)
-                    return  # extension registered
+                    n = discover_event_handlers(cls._i3hub_extension_name or
+                            name, extension_instance, subscribed_i3_events)
+                if n == name:
+                    # class extension already used the module name as extension
+                    # name, no need to continue
+                    return
 
-            # don't allow more than one extension per name (this exists to
-            # block a single module from declaring multiple classes as
-            # extensions)
+            if (getattr(extension, '_I3HUB_STATUS_EXTENSION', False)
+                    and not self.run_as_status):
+                # extension should only be used when i3hub is running
+                # as status command
+                return
+
+            # don't allow more than one extension per name
             if name in self._registered_extensions:
-                raise Exception(
-                        'More than one extension registered as "{}"'.format(
-                            name))
+                print((
+                    'WARNING: Multiple extension with name "{}". '
+                    'Only the first was registered.' 
+                    ).format(name))
+                return
 
             for _, handler in inspect.getmembers(extension, is_event_handler):
                 for event in handler._i3hub_listen_to:
@@ -282,6 +288,7 @@ class I3Hub(object):
                     self._add_event_handler(event, handler)
             self._registered_extensions[name] = extension
             print('registered extension "{}"'.format(name))
+            return name
 
         subscribed_i3_events = set()
         for name, extension in self._extensions:
@@ -433,11 +440,11 @@ class I3Hub(object):
         self._closed = True
 
 
-def extension(run_as_status_only=False):
+def extension(name=None):
     def dec(cls):
         if not (inspect.isclass(cls) and cls.__name__ != 'module'):
             raise Exception('The @extension decorator is for classes only')
-        cls._run_as_status_only = run_as_status_only
+        cls._i3hub_extension_name = name
         cls._i3hub_class_extension = True
         return cls
     return dec

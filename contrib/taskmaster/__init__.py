@@ -13,7 +13,6 @@ from datetime import datetime
 
 from i3hub import extension, listen, status_array_merge
 
-
 SOCKET_ADDRESS = b'\0i3hub-taskmaster'
 POMODORO_TIME = 25 * 60
 REST_TIME = 5 * 60
@@ -67,8 +66,10 @@ class Task(object):
                 ws in self.allowed_workspaces)
 
 
-@extension(run_as_status_only=True)
+@extension()
 class Taskmaster(object):
+    _I3HUB_STATUS_EXTENSION = True
+
     def __init__(self, i3):
         self._i3 = i3
         self._loop = i3.event_loop

@@ -72,7 +72,8 @@ class I3(object):
 @pytest.fixture
 def i3(request, event_loop):
     run_i3hub = getattr(request.module, 'run_i3hub', False)
-    i3 = I3([extension, extension.ModuleExtension()], run_i3hub)
+    i3 = I3([('extension', extension), ('mod', extension.ModuleExtension())],
+            run_i3hub)
     event_loop.run_until_complete(i3.setup(event_loop))
     yield i3
     event_loop.run_until_complete(i3.teardown(event_loop))
@@ -128,4 +129,4 @@ def extensionevents(i3hub):
 
 @pytest.fixture
 def moduleevents(i3hub):
-    return i3hub._extensions[1]._events
+    return i3hub._extensions[1][1]._events

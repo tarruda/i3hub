@@ -12,8 +12,10 @@ def ignore_sigs():
     signal.signal(CONT_SIGNAL, signal.SIG_IGN)
 
 
-@extension(run_as_status_only=True)
+@extension()
 class Status(object):
+    _I3HUB_STATUS_EXTENSION = True
+
     def __init__(self, i3):
         self._i3 = i3
         self._loop = i3.event_loop

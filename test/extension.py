@@ -10,7 +10,7 @@ class Extension(object):
         self._events.append((self._i3, event, arg))
 
 
-@extension()
+@extension(name='i3')
 class I3Events(Extension):
     @listen('i3hub::init')
     @listen('i3::window')
@@ -19,8 +19,10 @@ class I3Events(Extension):
         self._record_event(event, arg)
 
 
-@extension(run_as_status_only=True)
+@extension(name='status')
 class StatusEvents(Extension):
+    _I3HUB_STATUS_EXTENSION = True
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._refresh_count = 0
@@ -48,7 +50,7 @@ class StatusEvents(Extension):
             status_array.append({'1': 2, '3': '4'})
         self._refresh_count += 1
 
-@extension()
+@extension(name='events')
 class ExtensionEvents(Extension):
     @listen('extension::some_extension::custom')
     async def event_handler(self, event, arg):

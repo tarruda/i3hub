@@ -3,6 +3,8 @@ from i3hub import extension, listen, status_array_merge
 
 @extension()
 class KeyboardLayoutSwitcher(object):
+    _I3HUB_STATUS_EXTENSION = True
+
     def __init__(self, i3):
         self._i3 = i3
         self._layouts = None
