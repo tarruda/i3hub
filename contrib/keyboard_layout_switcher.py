@@ -16,7 +16,7 @@ class KeyboardLayoutSwitcher(object):
         status_array_merge(status_array, {
             'name': 'keyboard_layout',
             'markup': 'none',
-            'full_text': layout
+            'full_text': '\uf11c {}'.format(layout)
             })
 
     async def _switch_layout(self):

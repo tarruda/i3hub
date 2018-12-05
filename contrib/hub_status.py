@@ -30,7 +30,7 @@ class HubStatus(object):
         return {
             'name': 'disk',
             'markup': 'none',
-            'full_text': '/ {:.1f}/{:.1f} GB'.format(used, total)
+            'full_text': '\uf0a0 {:.1f}G/{:.1f}G'.format(used, total)
         }
 
     def _memory(self):
@@ -38,16 +38,17 @@ class HubStatus(object):
         used = vm.used / GB
         total = vm.total / GB
         return {
+
             'name': 'memory',
             'markup': 'none',
-            'full_text': 'mem {:.1f}/{:.1f} GB'.format(used, total)
+            'full_text': '\uf2db {:.1f}G/{:.1f}G'.format(used, total)
         }
 
     def _cpu(self):
         return {
             'name': 'cpu',
             'markup': 'none',
-            'full_text': 'cpu {:.0f} %'.format(psutil.cpu_percent())
+            'full_text': '\uf233 {:.0f} %'.format(psutil.cpu_percent())
         }
 
     def _network(self):
@@ -77,7 +78,8 @@ class HubStatus(object):
         return {
             'name': 'date',
             'markup': 'none',
-            'full_text': self._now.strftime('%Y-%m-%d %H:%M:%S')
+            'full_text': '\uf073 {}'.format(
+                self._now.strftime('%Y-%m-%d %H:%M:%S'))
         }
 
     @listen('i3hub::i3bar_refresh')
