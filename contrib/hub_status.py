@@ -23,12 +23,21 @@ class HubStatus(object):
         self._updating = False
         self._now = datetime.datetime.now()
 
+    def _get_color(self, percent_usage):
+        color = None
+        if percent_usage >= 0.75:
+            color = '#cc0000'
+        elif percent_usage >= 0.5:
+            color = '#ffcc00'
+        return color
+
     def _disk(self):
         usage = psutil.disk_usage('/')
         used = usage.used / GB
         total = usage.total / GB
         return {
             'name': 'disk',
+            'color': self._get_color(used / total),
             'markup': 'none',
             'full_text': '\uf0a0 {:.1f}G/{:.1f}G'.format(used, total)
         }
@@ -38,17 +47,19 @@ class HubStatus(object):
         used = vm.used / GB
         total = vm.total / GB
         return {
-
             'name': 'memory',
+            'color': self._get_color(used / total),
             'markup': 'none',
             'full_text': '\uf2db {:.1f}G/{:.1f}G'.format(used, total)
         }
 
     def _cpu(self):
+        percent = psutil.cpu_percent()
         return {
             'name': 'cpu',
+            'color': self._get_color(percent / 100),
             'markup': 'none',
-            'full_text': '\uf233 {:.0f} %'.format(psutil.cpu_percent())
+            'full_text': '\uf233 {:.0f} %'.format(percent)
         }
 
     def _network(self):
