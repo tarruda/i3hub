@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import json
+import os
 import signal
 import psutil
 
@@ -24,6 +25,8 @@ class HubStatus(object):
         self._updating = False
         self._proc_net_route = None
         self._current_status = []
+        self._counters = psutil.net_io_counters(pernic=True, nowrap=True)
+        self._counters_timestamp = datetime.datetime.now().timestamp()
 
     def _get_color(self, percent_usage):
         color = None
@@ -44,6 +47,32 @@ class HubStatus(object):
             line = line.split()
             if len(line) > 1 and int(line[1], base=16) == 0:
                 return line[0]
+
+    def _compute_nic_throughput(self, nic, now):
+        last_counters = self._counters
+        last_timestamp = self._counters_timestamp
+        self._counters = psutil.net_io_counters(pernic=True)
+        self._counters_timestamp = now.timestamp()
+        last_nc = last_counters.get(nic, None)
+        nc = self._counters.get(nic, None)
+        if not (nc and last_nc):
+            return
+        seconds_passed = self._counters_timestamp - last_timestamp
+        download_rate = (nc.bytes_recv - last_nc.bytes_recv) / seconds_passed
+        upload_rate = (nc.bytes_sent - last_nc.bytes_sent) / seconds_passed
+        if download_rate < KB:
+            download = '{:.0f} B/s'.format(download_rate)
+        elif download_rate < MB:
+            download = '{:.0f} K/s'.format(download_rate / KB)
+        else:
+            download = '{:.0f} M/s'.format(download_rate / MB)
+        if upload_rate < KB:
+            upload = '{:.0f} B/s'.format(upload_rate)
+        elif upload_rate < MB:
+            upload = '{:.0f} K/s'.format(upload_rate / KB)
+        else:
+            upload = '{:.0f} M/s'.format(upload_rate / MB)
+        return download, upload
 
     def _disk(self, now):
         usage = psutil.disk_usage('/')
@@ -86,10 +115,12 @@ class HubStatus(object):
             if k == default_gateway_interface or (
                     not default_gateway_interface and interface.isup):
                 addrs = psutil.net_if_addrs()[k]
+                download, upload = self._compute_nic_throughput(k, now)
                 return {
                     'name': 'network',
                     'markup': 'none',
-                    'full_text': '{} {}'.format(net_icon, addrs[0].address)
+                    'full_text': '{} {} \uf019 {} \uf093 {}'.format(
+                        net_icon, addrs[0].address, download, upload)
                 }
 
     def _battery(self, now):
@@ -132,11 +163,11 @@ class HubStatus(object):
     async def run(self):
         modules = [
             (self._date, 5),
-            (self._battery, 5),
-            (self._network, 5),
+            (self._battery, 30),
+            (self._network, 10),
             (self._cpu, 5),
             (self._memory, 5),
-            (self._disk, 5),
+            (self._disk, 30),
         ]
 
         def check(first_run):
