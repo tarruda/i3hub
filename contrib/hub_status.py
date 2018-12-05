@@ -63,6 +63,9 @@ class HubStatus(object):
         }
 
     def _network(self):
+        wifi_icon = '\uf1eb'
+        net_icon = '\uf0e8'  # (this is actually the sitemap icon)
+        vpn_icon = '\uf023'  # lock icon, try to find a better one later
         stats = psutil.net_if_stats()
         for k, interface in stats.items():
             if k == 'lo':
@@ -72,7 +75,7 @@ class HubStatus(object):
                 return {
                     'name': 'network',
                     'markup': 'none',
-                    'full_text': '{}'.format(addrs[0].address)
+                    'full_text': '{} {}'.format(net_icon, addrs[0].address)
                 }
 
     def _battery(self):
