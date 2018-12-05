@@ -11,6 +11,7 @@ KB = 1024
 MB = KB * 1024
 GB = MB * 1024
 
+
 @extension()
 class HubStatus(object):
     _I3HUB_STATUS_EXTENSION = True
@@ -21,7 +22,8 @@ class HubStatus(object):
         self._stop_sig = None
         self._cont_sig = None
         self._updating = False
-        self._now = datetime.datetime.now()
+        self._proc_net_route = None
+        self._current_status = []
 
     def _get_color(self, percent_usage):
         color = None
@@ -31,7 +33,19 @@ class HubStatus(object):
             color = '#ffcc00'
         return color
 
-    def _disk(self):
+    def _get_default_gateway_interface(self):
+        if not self._proc_net_route:
+            if not os.path.exists('/proc/net/route'):
+                return
+            self._proc_net_route = open('/proc/net/route')
+        self._proc_net_route.seek(0)
+        self._proc_net_route.readline() # skip first line
+        for line in self._proc_net_route:
+            line = line.split()
+            if len(line) > 1 and int(line[1], base=16) == 0:
+                return line[0]
+
+    def _disk(self, now):
         usage = psutil.disk_usage('/')
         used = usage.used / GB
         total = usage.total / GB
@@ -42,7 +56,7 @@ class HubStatus(object):
             'full_text': '\uf0a0 {:.1f}G/{:.1f}G'.format(used, total)
         }
 
-    def _memory(self):
+    def _memory(self, now):
         vm = psutil.virtual_memory()
         used = vm.used / GB
         total = vm.total / GB
@@ -53,7 +67,7 @@ class HubStatus(object):
             'full_text': '\uf2db {:.1f}G/{:.1f}G'.format(used, total)
         }
 
-    def _cpu(self):
+    def _cpu(self, now):
         percent = psutil.cpu_percent()
         return {
             'name': 'cpu',
@@ -62,15 +76,15 @@ class HubStatus(object):
             'full_text': '\uf233 {:.0f} %'.format(percent)
         }
 
-    def _network(self):
+    def _network(self, now):
         wifi_icon = '\uf1eb'
         net_icon = '\uf0e8'  # (this is actually the sitemap icon)
         vpn_icon = '\uf023'  # lock icon, try to find a better one later
         stats = psutil.net_if_stats()
+        default_gateway_interface = self._get_default_gateway_interface()
         for k, interface in stats.items():
-            if k == 'lo':
-                continue
-            if interface.isup:
+            if k == default_gateway_interface or (
+                    not default_gateway_interface and interface.isup):
                 addrs = psutil.net_if_addrs()[k]
                 return {
                     'name': 'network',
@@ -78,7 +92,7 @@ class HubStatus(object):
                     'full_text': '{} {}'.format(net_icon, addrs[0].address)
                 }
 
-    def _battery(self):
+    def _battery(self, now):
         b = psutil.sensors_battery()
         if not b:
             return None
@@ -88,28 +102,16 @@ class HubStatus(object):
             'full_text': 'battery'
         }
 
-    def _date(self):
+    def _date(self, now):
         return {
             'name': 'date',
             'markup': 'none',
-            'full_text': '\uf073 {}'.format(
-                self._now.strftime('%Y-%m-%d %H:%M:%S'))
+            'full_text': '\uf073 {}'.format(now.strftime('%Y-%m-%d %H:%M:%S'))
         }
 
     @listen('i3hub::i3bar_refresh')
     async def on_i3bar_refresh(self, event, status_array):
-        stats = [
-            self._disk(),
-            self._memory(),
-            self._cpu(),
-            self._network(),
-            self._battery(),
-            self._date()
-        ]
-        for stat in stats:
-            if stat:
-                status_array.append(stat)
-
+        status_array += self._current_status
 
     @listen('i3hub::i3bar_suspend')
     async def on_i3bar_suspend(self, event, arg):
@@ -128,8 +130,29 @@ class HubStatus(object):
         self._loop.create_task(self.run())
 
     async def run(self):
+        modules = [
+            (self._date, 5),
+            (self._battery, 5),
+            (self._network, 5),
+            (self._cpu, 5),
+            (self._memory, 5),
+            (self._disk, 5),
+        ]
+
+        def check(first_run):
+            now = datetime.datetime.now()
+            rv = False
+            for module, update_frequency in modules:
+                if first_run or now.second % update_frequency == 0:
+                    result = module(now)
+                    if result:
+                        status_array_merge(self._current_status, result)
+                        rv = True
+            return rv
+
+        check(True)
+        self._i3.refresh_i3bar()
         while True:
             await asyncio.sleep(1)
-            self._now = datetime.datetime.now()
-            if self._now.second % 5 == 0:
+            if check(False):
                 self._i3.refresh_i3bar()
