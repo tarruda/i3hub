@@ -74,8 +74,7 @@ class Taskmaster(object):
         self._i3 = i3
         self._loop = i3.event_loop
         self._vitrc_path = '{}/vitrc'.format(self._i3.runtime_dir)
-        self._task_data_dir = os.getenv('TASKDATA',
-                '{}/.task'.format(os.getenv('HOME')))
+        self._task_data_dir = None
         self._command = 'vit'
         self._font = None
         self._window_title = None
@@ -262,9 +261,20 @@ class Taskmaster(object):
         await tw.wait()
         self._task = None
                 
+    async def _get_task_datadir(self):
+        tw = await asyncio.create_subprocess_exec('task', 'show',
+                'data.location', stdout=asyncio.subprocess.PIPE)
+        stdout, _ = await tw.communicate()
+        lines = stdout.decode('utf-8').split('\n')
+        for line in lines:
+            if line.startswith('data.location'):
+                return line.split()[1]
+        return os.getenv('TASKDATA', '{}/.task'.format(os.getenv('HOME')))
+
     @listen('i3hub::init')
     async def on_init(self, event, arg):
         config = arg['config']
+        self._task_data_dir = await self._get_task_datadir()
         self._font = config.get('font', None)
         self._window_title = config.get('window-title', 'tasks')
         self._pomodoro_time = config.get('pomodoro-time', POMODORO_TIME)
