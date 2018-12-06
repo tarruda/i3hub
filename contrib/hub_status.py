@@ -29,7 +29,7 @@ class HubStatus(object):
         self._counters_timestamp = datetime.datetime.now().timestamp()
 
     def _get_color(self, percent_usage):
-        color = None
+        color = 'green'
         if percent_usage >= 0.75:
             color = '#cc0000'
         elif percent_usage >= 0.5:
@@ -80,9 +80,10 @@ class HubStatus(object):
         total = usage.total / GB
         return {
             'name': 'disk',
-            'color': self._get_color(used / total),
-            'markup': 'none',
-            'full_text': '\uf0a0 {:.1f}G/{:.1f}G'.format(used, total)
+            'markup': 'pango',
+            'full_text': ('<span foreground="{}">\uf0a0</span> '
+                          '{:.1f}G/{:.1f}G').format(
+                              self._get_color(used / total), used, total)
         }
 
     def _memory(self, now):
@@ -91,18 +92,20 @@ class HubStatus(object):
         total = vm.total / GB
         return {
             'name': 'memory',
-            'color': self._get_color(used / total),
-            'markup': 'none',
-            'full_text': '\uf2db {:.1f}G/{:.1f}G'.format(used, total)
+            'markup': 'pango',
+            'full_text': ('<span foreground="{}">\uf2db</span> '
+                          '{:.1f}G/{:.1f}G').format(
+                            self._get_color(used / total), used, total)
         }
 
     def _cpu(self, now):
         percent = psutil.cpu_percent()
         return {
             'name': 'cpu',
-            'color': self._get_color(percent / 100),
-            'markup': 'none',
-            'full_text': '\uf233 {:.0f} %'.format(percent)
+            'markup': 'pango',
+            'full_text': ('<span foreground="{}">\uf233</span> '
+                          '{:.0f} %').format(self._get_color(percent / 100),
+                              percent)
         }
 
     def _network(self, now):
@@ -118,8 +121,11 @@ class HubStatus(object):
                 download, upload = self._compute_nic_throughput(k, now)
                 return {
                     'name': 'network',
-                    'markup': 'none',
-                    'full_text': '{} {} \uf019 {} \uf093 {}'.format(
+                    'markup': 'pango',
+
+                    'full_text': ('{} {} '
+                    '<span foreground="#0e93cb">\uf019</span> {} '
+                    '<span foreground="#0e93cb">\uf093</span> {}').format(
                         net_icon, addrs[0].address, download, upload)
                 }
 
