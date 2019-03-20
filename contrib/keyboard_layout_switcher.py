@@ -1,3 +1,6 @@
+# Simple extension that allows switching keyboard layouts with setxkbmap . If
+# i3hub is running as a i3 bar command, the extension will also display a
+# widget in the bar.
 from i3hub import extension, listen, status_array_merge
 
 

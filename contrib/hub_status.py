@@ -1,3 +1,10 @@
+# Example implementation of an i3 status line. The goal here is to avoid
+# spawning external commands, almost everything is obtained through the psutil
+# python module (sudo apt install python3-psutil). The only exception is the
+# default network interface, which is read from /proc/net/route filesystem.
+
+# This is intentionally not configurable, it serves more as an example or
+# starting point to someone wanting to implement their own custom status line.
 import asyncio
 import datetime
 import json

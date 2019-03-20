@@ -1,3 +1,14 @@
+# This extension implements automatic split toggling on enabled workspaces.
+# Workspaces where automatic toggling is enabled is configured on
+# ~/.config/i3hub/i3hub.cfg like this:
+#
+#       [split_alternator]
+#       workspaces = ["1", "2", "3"]
+# 
+# On i3 configuration It is possible to configure a key to toggle this
+# functionality at runtime:
+#
+#       bindsym Mod1+a nop toggle-split-alternator
 from i3hub import extension, listen
 
 
