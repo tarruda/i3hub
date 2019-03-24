@@ -2,7 +2,7 @@ import os
 from setuptools import setup
 
 
-VERSION = '3.0.0'
+VERSION = '3.1.0'
 REPO    = 'https://github.com/tarruda/i3hub'
 
 
