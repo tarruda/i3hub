@@ -140,10 +140,30 @@ class HubStatus(object):
         b = psutil.sensors_battery()
         if not b:
             return None
+            color = '#ffcc00'
+        if b.power_plugged:
+            icon = '\uf376' 
+            color = 'green'
+        elif b.percent > 75:
+            icon = '\uf240' 
+            color = 'green'
+        elif b.percent > 50:
+            icon = '\uf241' 
+            color = '#ffcc00'
+        elif b.percent > 25:
+            icon = '\uf242' 
+            color = '#ffcc00'
+        elif b.percent > 10:
+            color = '#cc0000'
+            icon = '\uf243' 
+        else:
+            color = '#cc0000'
+            icon = '\uf244' 
         return {
             'name': 'battery',
-            'markup': 'none',
-            'full_text': 'battery'
+            'markup': 'pango',
+            'full_text': '<span foreground="{}">{}</span> {:.0f}%'.format(
+                color, icon, b.percent)
         }
 
     def _date(self, now):
