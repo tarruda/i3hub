@@ -141,10 +141,7 @@ class HubStatus(object):
         if not b:
             return None
             color = '#ffcc00'
-        if b.power_plugged:
-            icon = '\uf376' 
-            color = 'green'
-        elif b.percent > 75:
+        if b.percent > 75:
             icon = '\uf240' 
             color = 'green'
         elif b.percent > 50:
@@ -159,6 +156,8 @@ class HubStatus(object):
         else:
             color = '#cc0000'
             icon = '\uf244' 
+        if b.power_plugged:
+            icon = '\uf0e7' 
         return {
             'name': 'battery',
             'markup': 'pango',
