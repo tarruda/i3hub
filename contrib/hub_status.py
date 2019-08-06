@@ -72,13 +72,13 @@ class HubStatus(object):
         elif download_rate < MB:
             download = '{:.0f} K/s'.format(download_rate / KB)
         else:
-            download = '{:.0f} M/s'.format(download_rate / MB)
+            download = '{:.1f} M/s'.format(download_rate / MB)
         if upload_rate < KB:
             upload = '{:.0f} B/s'.format(upload_rate)
         elif upload_rate < MB:
             upload = '{:.0f} K/s'.format(upload_rate / KB)
         else:
-            upload = '{:.0f} M/s'.format(upload_rate / MB)
+            upload = '{:.1f} M/s'.format(upload_rate / MB)
         return download, upload
 
     def _disk(self, now):
