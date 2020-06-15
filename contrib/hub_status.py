@@ -95,7 +95,7 @@ class HubStatus(object):
 
     def _memory(self, now):
         vm = psutil.virtual_memory()
-        used = vm.used / GB
+        used = (vm.total - vm.available) / GB
         total = vm.total / GB
         return {
             'name': 'memory',
