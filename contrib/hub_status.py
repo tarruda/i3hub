@@ -3,8 +3,10 @@
 # python module (sudo apt install python3-psutil). The only exception is the
 # default network interface, which is read from /proc/net/route filesystem.
 
-# This is intentionally not configurable, it serves more as an example or
-# starting point to someone wanting to implement their own custom status line.
+# By default all widgets are enabled, but can be disabled in configuration like
+# this:
+#     [hub_status]
+#     disable = ["battery", "network"]
 import asyncio
 import datetime
 import json
@@ -26,6 +28,7 @@ class HubStatus(object):
 
     def __init__(self, i3):
         self._i3 = i3
+        self._disabled_widgets = None
         self._loop = i3.event_loop
         self._stop_sig = None
         self._cont_sig = None
@@ -190,10 +193,11 @@ class HubStatus(object):
 
     @listen('i3hub::init')
     async def init(self, event, arg):
+        self._disabled_widgets = arg['config'].get('disable', [])
         self._loop.create_task(self.run())
 
-    async def run(self):
-        modules = [
+    def _get_modules(self):
+        all_modules = [
             (self._date, 5),
             (self._battery, 30),
             (self._network, 10),
@@ -201,6 +205,11 @@ class HubStatus(object):
             (self._memory, 5),
             (self._disk, 30),
         ]
+        return [(f, i) for (f, i) in all_modules
+                if f.__name__[1:] not in self._disabled_widgets]
+
+    async def run(self):
+        modules = self._get_modules()
 
         def check(first_run):
             now = datetime.datetime.now()
